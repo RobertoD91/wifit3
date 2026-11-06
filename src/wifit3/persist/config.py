@@ -62,6 +62,8 @@ class Config:
     silenced_bssids: list[str] = []
     decloaked_ssids: dict[str, str] = {}
     hide_silenced: bool = False
+    # Custom PEM (certificate chain + private key) the enterprise evil twin presents; "" = bundled.
+    eviltwin_cert_path: str = ""
     wps_auto_pbc: bool = True
     enable_dfs_channels: bool = False
     auto_crack: ToolName | None = ToolName.CPU_CRACK
@@ -117,6 +119,7 @@ class Config:
                                    if isinstance(ssid, str) and ssid
                                    and len(ssid.encode("utf-8")) <= SSID_MAX_OCTETS}
         cls.hide_silenced = bool(data.get("hide_silenced", cls.hide_silenced))
+        cls.eviltwin_cert_path = str(data.get("eviltwin_cert_path", cls.eviltwin_cert_path))
         cls.wps_auto_pbc = bool(data.get("wps_auto_pbc", cls.wps_auto_pbc))
         cls.enable_dfs_channels = bool(data.get("enable_dfs_channels", cls.enable_dfs_channels))
         cls.auto_crack = _auto_crack(data, cls.auto_crack)
@@ -147,6 +150,8 @@ class Config:
             f"enable_dfs_channels = {_fmt(cls.enable_dfs_channels)}\n"
             f"auto_crack = {_fmt(cls.auto_crack or '')}\n"
         )
+        if cls.eviltwin_cert_path:                    # absent = bundled rogue cert
+            text += f"eviltwin_cert_path = {_fmt(cls.eviltwin_cert_path)}\n"
         text += _table_text("cpu_crack", cls.cpu_crack)
         text += _table_text("hashcat", cls.hashcat)
         text += _table_text("hashtopolis", cls.hashtopolis)

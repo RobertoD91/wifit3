@@ -17,10 +17,15 @@ logger = logging.getLogger(__name__)
 CERT_PATH = Path(__file__).parent / "assets" / "eap_server.pem"
 
 
-def server_context() -> ssl.SSLContext:
-    """A permissive TLS server context using the bundled rogue certificate."""
+def server_context(cert_path: str | None = None) -> ssl.SSLContext:
+    """A permissive TLS server context. ``cert_path`` is a PEM holding the certificate (chain) and
+    its private key; None uses the bundled self-signed rogue certificate. Bring your own (e.g. one
+    minted with Certbot, or cloned to mimic the target's RADIUS CA) by pointing here."""
+    path = cert_path or str(CERT_PATH)
+    if cert_path and not Path(cert_path).is_file():
+        raise ValueError(f"EAP server certificate not found: {cert_path}")
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ctx.load_cert_chain(str(CERT_PATH))
+    ctx.load_cert_chain(path)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     _relax(ctx)
