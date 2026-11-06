@@ -1,9 +1,14 @@
 """TLS tunnel for the PEAP / EAP-TTLS phase, driven over memory BIOs (no sockets).
 
-The rogue authenticator presents a bundled self-signed certificate. A supplicant that validates its
-server certificate will refuse the tunnel (that is the defence); a misconfigured one that accepts any
-certificate completes it, and the inner MSCHAPv2 / GTC / PAP exchange is then captured. Old ciphers
-and TLS versions are allowed on purpose, since real supplicants still offer them.
+The rogue authenticator presents whatever certificate the operator supplies (bundled self-signed by
+default). Who completes the tunnel depends on how the supplicant validates:
+  - pins the exact enterprise CA + server name  -> refuses any twin (the only real defence)
+  - trusts any publicly-valid CA / matches the name loosely -> accepts a *valid* certificate the
+    attacker legitimately holds for a look-alike (typosquat) domain, e.g. one minted with Certbot
+  - validates nothing / asks the user, who clicks trust -> accepts even the self-signed cert
+Once the tunnel completes, the inner MSCHAPv2 / GTC / PAP exchange is captured. The whole point of
+the demo: a *valid* certificate proves the CA signed it, not that it is the network you meant to
+join. Old ciphers and TLS versions are allowed on purpose, since real supplicants still offer them.
 """
 from __future__ import annotations
 
@@ -15,6 +20,27 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 CERT_PATH = Path(__file__).parent / "assets" / "eap_server.pem"
+
+
+def describe_cert(cert_path: str | None = None) -> str:
+    """A short, human-readable line about the certificate the twin will present: CN, whether it is
+    self-signed or CA-signed (and by whom), and its expiry. Best-effort; used only for the demo log.
+
+    For the typosquat demo this makes the point visible: a Certbot-issued cert for a look-alike
+    domain shows as CA-signed and valid, yet it is the attacker's."""
+    path = cert_path or str(CERT_PATH)
+    try:
+        info = ssl._ssl._test_decode_cert(path)        # stable across CPython; CPython's own tests use it
+        subject = dict(part[0] for part in info.get("subject", ()))
+        issuer = dict(part[0] for part in info.get("issuer", ()))
+        cn = subject.get("commonName") or subject.get("organizationName") or "?"
+        if subject == issuer:
+            trust = "self-signed"
+        else:
+            trust = "CA-signed by " + (issuer.get("commonName") or issuer.get("organizationName") or "?")
+        return f"CN={cn} ({trust}), valid until {info.get('notAfter', '?')}"
+    except Exception:                                   # noqa: BLE001 - a demo log must never break the twin
+        return "custom certificate" if cert_path else "bundled self-signed certificate"
 
 
 def server_context(cert_path: str | None = None) -> ssl.SSLContext:
