@@ -8,6 +8,7 @@ from wifit3.persist.ap_state import DatedHashline
 from wifit3.ui.vault.modals.cpu_crack import CpuCrackConfigModal
 from wifit3.ui.vault.modals.hashcat import HashcatConfigModal
 from wifit3.ui.vault.modals.hashtopolis import HashtopolisConfigModal
+from wifit3.ui.vault.modals.wpa_sec import WpaSecConfigModal
 
 
 class LaunchModalConstructor(Protocol):
@@ -22,4 +23,5 @@ UI_TOOLS: Dict[ToolName, LaunchModalConstructor] = {
     ToolName.HASHCAT: HashcatConfigModal,
     ToolName.CPU_CRACK: CpuCrackConfigModal,
     ToolName.HASHTOPOLIS: HashtopolisConfigModal,
+    ToolName.WPA_SEC: WpaSecConfigModal,
 }

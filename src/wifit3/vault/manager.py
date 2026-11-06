@@ -13,6 +13,7 @@ from wifit3.vault.tools.base import VaultTool, job_file, jobs_dir
 from wifit3.vault.tools.cpu_crack import CpuCrackTool
 from wifit3.vault.tools.hashcat import HashcatTool
 from wifit3.vault.tools.hashtopolis import HashtopolisTool
+from wifit3.vault.tools.wpa_sec import WpaSecTool
 from wifit3.crack import wpa_psk
 from wifit3.crack.hc22000_format import read_hc22000
 from wifit3.persist.ap_state import PasswordStatus
@@ -49,6 +50,7 @@ class JobManager:
         self.register_tool(HashcatTool())
         self.register_tool(CpuCrackTool())
         self.register_tool(HashtopolisTool())
+        self.register_tool(WpaSecTool())
         self._load()
 
     def register_tool(self, tool: VaultTool) -> None:
