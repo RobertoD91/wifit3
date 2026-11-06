@@ -28,6 +28,7 @@ from wifit3.persist.config import Config
 from ..campaigns.pin import WpsCampaign
 from ..campaigns.deauth import DeauthCampaign
 from ..campaigns.eviltwin import EvilTwinCampaign
+from ..campaigns.eviltwin_enterprise.campaign import EnterpriseEvilTwinCampaign
 from ..campaigns.decloak import DecloakCampaign, KnownDecloakCampaign
 
 if TYPE_CHECKING:
@@ -36,7 +37,8 @@ if TYPE_CHECKING:
 
 # Attack-button campaigns in button-row order.
 BUTTON_CAMPAIGNS = [WepCampaign, DeauthCampaign, PmkidHarvestAttack, WpsCampaign,
-                    EvilTwinCampaign, DecloakCampaign, KnownDecloakCampaign]
+                    EvilTwinCampaign, EnterpriseEvilTwinCampaign, DecloakCampaign,
+                    KnownDecloakCampaign]
 
 
 CAMPAIGN_BY_KEY = {cls.key: cls for cls in BUTTON_CAMPAIGNS}
@@ -314,12 +316,9 @@ def status_headlines(ap: AccessPoint, array: WlanArray, vault: Vault) -> list[st
     # 802.1X/Enterprise (incl. FILS): login attacks not yet supported; checked before any stale PSK
     # or old 4-way left from a previous (PSK) config can surface a misleading headline.
     if eap_only(ap):
-        if ap.wpa3 and ap.transition_mode:
-            return ["[dim]● WPA3/Enterprise transition: not yet supported[/dim]"]
-        if ap.wpa3:
-            return ["[dim]● WPA3/Enterprise: not yet supported[/dim]"]
-        wpa_label = "WPA2" if ap.rsn_valid else "WPA"
-        return [f"[dim]● {wpa_label}/Enterprise: not yet supported[/dim]"]
+        wpa_label = "WPA3" if ap.wpa3 else ("WPA2" if ap.rsn_valid else "WPA")
+        return [f"[cyan]● {wpa_label}/Enterprise (802.1X)[/cyan]",
+                "[dim]press Enterprise Twin to harvest EAP identities + credentials[/dim]"]
 
     if no_passphrase(ap):
         return ["[dim]● OWE (Enhanced Open): Diffie-Hellman key, nothing to crack[/dim]"]

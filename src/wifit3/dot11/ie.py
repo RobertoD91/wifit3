@@ -33,6 +33,10 @@ SUPPORTED_RATES_5GHZ = bytes([0x8C, 0x12, 0x98, 0x24, 0xB0, 0x48, 0x60, 0x6C])
 # AKM = PSK, no PMF. The client-side fallback when the AP's own IE is unusable.
 GENERIC_RSN_IE = bytes.fromhex("30140100000fac040100000fac040100000fac020000")
 
+# Generic WPA2-Enterprise (802.1X) RSN IE: same as above but AKM = 802.1X (suite 1). The twin's
+# fallback when the target's own RSN element can't be rewritten.
+GENERIC_RSN_IE_ENTERPRISE = bytes.fromhex("30140100000fac040100000fac040100000fac010000")
+
 _RSN_CAP_MFPC = 0x0080          # RSN caps MFPC bit (bit 7)
 _BIP_CMAC_128 = RSN_OUI + bytes([CIPHER_AES_128_CMAC])
 

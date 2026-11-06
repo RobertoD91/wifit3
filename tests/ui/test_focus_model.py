@@ -232,7 +232,7 @@ def test_headline_enterprise_transition_does_not_promise_a_psk_capture():
         akms=["EAP", "EAP-SHA256"], akm_suites=[1, 5],
     )
     headline = " ".join(_headline(ap))
-    assert "WPA3/Enterprise transition" in headline
+    assert "WPA3/Enterprise" in headline
     assert "Listening for handshake" not in headline
 
 

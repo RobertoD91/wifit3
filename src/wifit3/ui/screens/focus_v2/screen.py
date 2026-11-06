@@ -41,6 +41,9 @@ from wifit3.campaigns.wep import WepCampaign
 from wifit3.campaigns.deauth import DeauthCampaign
 from wifit3.campaigns.decloak import DecloakCampaign, DecloakInput, KnownDecloakCampaign
 from wifit3.campaigns.eviltwin import EvilTwinCampaign, EvilTwinInput
+from wifit3.campaigns.eviltwin_enterprise.campaign import (
+    EnterpriseEvilTwinCampaign, EnterpriseEvilTwinInput,
+)
 from wifit3.campaigns.pbc import WpsPbcCampaign
 from wifit3.campaigns.pin import (EMPTY_PIN_LABEL, WpsCampaign, load_run_state,
                                   run_progress_line)
@@ -105,6 +108,7 @@ _ATTACK_BUTTONS = [
     ("btn-decloak", "Decloak"), ("btn-known-decloak", "Decloak"),
     ("btn-gen-ivs", "ARP Replay"), ("btn-chop", "ChopChop"), ("btn-deauth", "AutoDeauth"),
     ("btn-pmkid", "PMKID"), ("btn-wps-pin", "WPS PIN"), ("btn-eviltwin", "EvilTwin"),
+    ("btn-eviltwin-ent", "Enterprise Twin"),
     ("btn-verify", "Verify"), ("btn-pbc", "Stop PBC"),
 ]
 
@@ -933,6 +937,8 @@ class FocusViewV2(Screen):
             self._toggle_wps_pin()
         elif bid == "btn-eviltwin":
             self._toggle_eviltwin()
+        elif bid == "btn-eviltwin-ent":
+            self._toggle_eviltwin_ent()
         elif bid == "btn-gen-ivs":
             self._toggle_generate_ivs()
         elif bid == "btn-chop":
@@ -1372,6 +1378,59 @@ class FocusViewV2(Screen):
         self._log(treelog.branch(f"[italic]punting clients[/italic] [dim]on[/dim] ch {ap.channel}"))
         self._log(treelog.leaf("[dim]waiting for clients to auth…[/dim]"))
         self.refresh_buttons()
+
+    def _toggle_eviltwin_ent(self) -> None:
+        cur = self._controls.current
+        if cur is not None and cur.key == "eviltwin_ent":
+            self._controls.request_stop()
+        else:
+            self._start_eviltwin_ent()
+        self.refresh_buttons()
+
+    def _start_eviltwin_ent(self) -> None:
+        ap = self._target_ap
+        array = self.app.array
+        if not ap or not array or not array.members:
+            self._log("[red]✗ No target / interface. Cannot start Enterprise Twin.[/red]")
+            return
+        if not any(_can_host(m) for m in array.members):
+            self._log("[red]✗ No interface can spoof a MAC, so none can host the twin."
+                      " The Enterprise Twin needs a SPOOFABLE or FIXED_MAC card.[/red]")
+            return
+        from wifit3.ui.screens.focus_v2.eviltwin_enterprise_modal import EnterpriseEvilTwinModal
+        self.app.push_screen(EnterpriseEvilTwinModal(ap, array.members),
+                             self._on_eviltwin_ent_input)
+
+    def _on_eviltwin_ent_input(self, enterprise_input: Optional[EnterpriseEvilTwinInput]) -> None:
+        if enterprise_input is None:
+            return
+        ap, array = self._target_ap, self.app.array
+        if not ap or not array:
+            return
+        try:
+            started = self._controls.start(EnterpriseEvilTwinCampaign, array, ap,
+                                           enterprise_input=enterprise_input)
+        except Exception as exc:
+            logger.exception("Enterprise Twin start failed")
+            self._log(f"[bold red]✗ Enterprise Twin failed to start:[/bold red] {escape(str(exc))}")
+            return
+        if started is None:
+            return
+        started.log = self._log
+        method = enterprise_input.method.value + (" + GTC↓" if enterprise_input.gtc_downgrade else "")
+        self._log(f"[bold cyan]Enterprise Twin[/bold cyan] of [bold cyan]"
+                  f"{escape(ap.ssid or ap.bssid)}[/bold cyan] active ({method}) on ch "
+                  f"{enterprise_input.twin_channel} [dim]({enterprise_input.twin_bssid})[/dim]")
+        self._log(treelog.leaf("[dim]waiting for clients to authenticate…[/dim]"))
+        self.refresh_buttons()
+
+    def _finish_eviltwin_ent(self, camp) -> None:
+        n = len(camp.captures)
+        if n:
+            self._log(f"[bold green]✓ Enterprise Twin harvested {n} EAP capture(s)[/bold green] "
+                      "[dim](saved to captures/)[/dim]")
+        else:
+            self._log("[bold red]Enterprise Twin stopped[/bold red]")
 
     def _finish_eviltwin(self, camp) -> None:
         """Reap a finished EvilTwin (user-stopped, or captured and released the radio itself)."""
