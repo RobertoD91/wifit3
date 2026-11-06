@@ -72,6 +72,9 @@ class Config:
     silenced_bssids: list[str] = []
     decloaked_ssids: dict[str, str] = {}
     hide_silenced: bool = False
+    # Auto-attack (wifite2-style): SSIDs to never attack, and whether active TX is allowed.
+    auto_attack_excluded_ssids: list[str] = []
+    auto_attack_aggressive: bool = False
     wps_auto_pbc: bool = True
     enable_dfs_channels: bool = False
     auto_crack: ToolName | None = ToolName.CPU_CRACK
@@ -83,6 +86,11 @@ class Config:
     @classmethod
     def is_silenced(cls, bssid: str) -> bool:
         return bssid.lower() in cls.silenced_bssids
+
+    @classmethod
+    def is_excluded(cls, ssid: str | None) -> bool:
+        """Whether this SSID is on the auto-attack exclusion list (case-insensitive)."""
+        return bool(ssid) and ssid.casefold() in {s.casefold() for s in cls.auto_attack_excluded_ssids}
 
     @classmethod
     def decloaked_ssid(cls, bssid: str) -> str | None:
@@ -128,6 +136,11 @@ class Config:
                                    if isinstance(ssid, str) and ssid
                                    and len(ssid.encode("utf-8")) <= SSID_MAX_OCTETS}
         cls.hide_silenced = bool(data.get("hide_silenced", cls.hide_silenced))
+        excluded = data.get("auto_attack_excluded_ssids", cls.auto_attack_excluded_ssids)
+        cls.auto_attack_excluded_ssids = ([str(x) for x in excluded] if isinstance(excluded, list)
+                                          else cls.auto_attack_excluded_ssids)
+        cls.auto_attack_aggressive = bool(data.get("auto_attack_aggressive",
+                                                   cls.auto_attack_aggressive))
         cls.wps_auto_pbc = bool(data.get("wps_auto_pbc", cls.wps_auto_pbc))
         cls.enable_dfs_channels = bool(data.get("enable_dfs_channels", cls.enable_dfs_channels))
         cls.auto_crack = _auto_crack(data, cls.auto_crack)
@@ -155,6 +168,8 @@ class Config:
             f"scanner_sort_delay = {_fmt(cls.scanner_sort_delay)}\n"
             f"silenced_bssids = {_fmt(cls.silenced_bssids)}\n"
             f"hide_silenced = {_fmt(cls.hide_silenced)}\n"
+            f"auto_attack_excluded_ssids = {_fmt(cls.auto_attack_excluded_ssids)}\n"
+            f"auto_attack_aggressive = {_fmt(cls.auto_attack_aggressive)}\n"
             f"wps_auto_pbc = {_fmt(cls.wps_auto_pbc)}\n"
             f"enable_dfs_channels = {_fmt(cls.enable_dfs_channels)}\n"
             f"auto_crack = {_fmt(cls.auto_crack or '')}\n"

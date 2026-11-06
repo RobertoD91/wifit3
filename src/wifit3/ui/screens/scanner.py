@@ -18,6 +18,7 @@ from ..ap_table import APTable, APRow, COLUMN_KEYS
 from ..selectable_rich_log import SelectableRichLog
 
 from wifit3.campaigns import treelog
+from wifit3.campaigns.auto_attack import AutoAttack
 from wifit3.campaigns.pin import EMPTY_PIN_LABEL
 from wifit3.persist.ap_state import PasswordStatus
 from wifit3.persist.config import Config
@@ -168,6 +169,7 @@ class ScannerView(Screen):
         Binding("/", "focus_filter", "Filter", show=False),
         Binding("l", "toggle_log", "Toggle Log", show=True),
         Binding("w", "wps_pbc_mode", "WPS PBC", show=True),
+        Binding("a", "auto_attack", "Auto-Attack", show=True),
         Binding("v", "open_vault", "Vault", show=True),
         Binding("home", "scroll_home", "Top", show=False, priority=True),
         Binding("end", "scroll_end", "Bottom", show=False, priority=True),
@@ -193,6 +195,7 @@ class ScannerView(Screen):
         # Per-BSSID (signature, row): an unchanged AP reuses its row object.
         self._row_cache: Dict[str, tuple] = {}
         self._logged_auto_crack: Optional[bool] = None
+        self._auto_attack: Optional[AutoAttack] = None
 
     # ----- Compose / mount ---------------------------------------------------
 
@@ -480,6 +483,41 @@ class ScannerView(Screen):
         log_widget = self.query_one("#system-log")
         log_widget.display = not log_widget.display
 
+    # ----- Auto-Attack (wifite2-style) ---------------------------------------
+
+    def action_auto_attack(self) -> None:
+        """Toggle the auto-attack driver: a press stops it while it runs, else opens its setup."""
+        if self._auto_attack is not None and self._auto_attack.running:
+            self._stop_auto_attack()
+            return
+        if self.app.array is None:
+            self.notify("No active interface", severity="error")
+            return
+        from .auto_attack_modal import AutoAttackModal
+        self.app.push_screen(AutoAttackModal(), self._launch_auto_attack)
+
+    def _launch_auto_attack(self, result: Optional[tuple[bool, list[str]]]) -> None:
+        if result is None:
+            return
+        aggressive, excluded = result
+        Config.auto_attack_aggressive = aggressive
+        Config.auto_attack_excluded_ssids = excluded
+        self.app.persist_config()
+        self.query_one("#system-log").display = True  # surface the driver's running log
+        self._auto_attack = AutoAttack(
+            self.app.array, aggressive=aggressive, excluded_ssids=excluded,
+            channels=self._channel_filter, include_dfs=Config.enable_dfs_channels,
+            log=self._write_log, on_capture=self._on_auto_capture)
+        self.run_worker(self._auto_attack.run(), group="auto-attack", exclusive=True)
+
+    def _on_auto_capture(self, ap: AccessPoint) -> None:
+        self.notify(f"Captured material for {escape(ap.ssid or ap.bssid)}",
+                    title="Auto-Attack", timeout=6)
+
+    def _stop_auto_attack(self) -> None:
+        if self._auto_attack is not None:
+            self._auto_attack.request_stop()
+
     def selected_ap(self) -> Optional[AccessPoint]:
         bssid = self.query_one("#ap-table", APTable).cursor_bssid
         return self.ap_cache.get(bssid) if bssid else None
@@ -559,6 +597,7 @@ class ScannerView(Screen):
         if reasons:
             self._write_log(treelog.leaf(f"[dim]ignored: {', '.join(reasons)}[/dim]"))
             return
+        self._stop_auto_attack()               # Focus owns the radio; don't let the driver fight it
         self.app.target_ap = ap
         self.app.push_screen(self.app.focus_view)
 
@@ -686,6 +725,7 @@ class ScannerView(Screen):
     async def on_ap_table_row_selected(self, event: APTable.RowSelected) -> None:
         target_ap = self.ap_cache.get(event.bssid)
         if target_ap:
+            self._stop_auto_attack()           # Focus owns the radio; don't let the driver fight it
             self.app.target_ap = target_ap
             self.app.push_screen(self.app.focus_view)
 
