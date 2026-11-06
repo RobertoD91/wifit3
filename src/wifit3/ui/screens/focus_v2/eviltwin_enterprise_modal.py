@@ -13,6 +13,7 @@ from wifit3.campaigns.eviltwin import PuntMode
 from wifit3.campaigns.eviltwin_enterprise.campaign import EnterpriseEvilTwinInput
 from wifit3.campaigns.eviltwin_enterprise.eap_server import Method
 from wifit3.dot11.pmf import PmfPosture
+from wifit3.persist.config import Config
 from wifit3.ui.screens.focus_v2.art import display_name
 from wifit3.ui.screens.focus_v2.eviltwin_modal import _can_host
 from wifit3.wlan.array import fake_mac_rank
@@ -64,6 +65,9 @@ class EnterpriseEvilTwinModal(ModalScreen[Optional[EnterpriseEvilTwinInput]]):
                              value=Method.PEAP.value, id="ent-method")
                 yield Checkbox("GTC downgrade (capture plaintext passwords)", value=False,
                                id="ent-gtc")
+                yield Label("Server certificate PEM (optional, cert+key; blank = bundled):")
+                yield Input(Config.eviltwin_cert_path, placeholder="/path/to/server.pem",
+                            id="ent-cert")
                 yield Checkbox("Evict clients from the real AP (deauth)",
                                value=self.target.pmf_posture not in (PmfPosture.REQUIRED,
                                                                      PmfPosture.INVALID),
@@ -92,11 +96,14 @@ class EnterpriseEvilTwinModal(ModalScreen[Optional[EnterpriseEvilTwinInput]]):
         method = Method(self.query_one("#ent-method", Select).value)
         gtc = self.query_one("#ent-gtc", Checkbox).value
         deauth = self.query_one("#ent-deauth", Checkbox).value
+        cert_path = self.query_one("#ent-cert", Input).value.strip()
+        Config.eviltwin_cert_path = cert_path
+        self.app.persist_config()
         punt_modes: tuple[PuntMode, ...] = (PuntMode.DEAUTH,) if deauth else ()
         self.dismiss(EnterpriseEvilTwinInput(
             twin_iface=twin_iface, punt_iface=twin_iface, twin_channel=self.target.channel,
-            twin_bssid=bssid, method=method, gtc_downgrade=gtc, punt_modes=punt_modes,
-            punt_period_sec=20.0 if deauth else None))
+            twin_bssid=bssid, method=method, gtc_downgrade=gtc, cert_path=cert_path or None,
+            punt_modes=punt_modes, punt_period_sec=20.0 if deauth else None))
 
     def _selected_host(self):
         value = self.query_one("#ent-iface", Select).value

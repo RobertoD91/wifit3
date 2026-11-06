@@ -40,6 +40,7 @@ class EnterpriseEvilTwinInput:
     twin_bssid: str
     method: Method = Method.PEAP
     gtc_downgrade: bool = False
+    cert_path: Optional[str] = None          # custom server PEM (cert+key); None = bundled cert
     punt_modes: tuple[PuntMode, ...] = ()
     csa_channel: Optional[int] = None
     punt_period_sec: Optional[float] = 30.0
@@ -100,6 +101,7 @@ class EnterpriseEvilTwinCampaign(Campaign):
         self.twin_bssid = evil_input.twin_bssid.lower()
         self.method = evil_input.method
         self.gtc_downgrade = evil_input.gtc_downgrade
+        self.cert_path = evil_input.cert_path
         self.same_bssid = self.twin_bssid == target.bssid
         self.punt_period_sec = evil_input.punt_period_sec
         self.punt_once = evil_input.punt_once
@@ -125,7 +127,7 @@ class EnterpriseEvilTwinCampaign(Campaign):
         self.fakeap = EnterpriseFakeAP(
             self.twin_iface, str_to_mac(self.twin_bssid), self.ssid, self.twin_channel,
             self.twin_beacon, method=self.method, gtc_downgrade=self.gtc_downgrade,
-            rx_source=self.twin_iface, on_capture=self._on_capture)
+            rx_source=self.twin_iface, on_capture=self._on_capture, cert_path=self.cert_path)
         if self.same_bssid:
             self.array.ignore_stray_beacons(self.twin_bssid, self.twin_channel)
         else:

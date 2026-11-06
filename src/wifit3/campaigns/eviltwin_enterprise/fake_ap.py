@@ -45,7 +45,7 @@ class EnterpriseFakeAP:
     def __init__(self, iface, bssid: bytes, ssid: str, channel: int, twin_beacon: bytes, *,
                  method: Method = Method.PEAP, gtc_downgrade: bool = False, rx_source=None,
                  on_capture: Optional[Callable[[Capture], None]] = None,
-                 server_name: str = "wifit3") -> None:
+                 server_name: str = "wifit3", cert_path: Optional[str] = None) -> None:
         self.iface = iface
         self.bssid = bssid
         self.ssid = ssid
@@ -57,7 +57,7 @@ class EnterpriseFakeAP:
         self.on_capture = on_capture or (lambda _c: None)
         self.server_name = server_name
         self.stats = EnterpriseStats()
-        self._context = server_context()                       # one cert, shared by every client
+        self._context = server_context(cert_path)              # one cert, shared by every client
         self._servers: Dict[str, EapServer] = {}
         self._recorded: set[tuple[str, str]] = set()
         self._probe_resp = self._probe_resp_from(twin_beacon)
