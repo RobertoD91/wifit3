@@ -47,7 +47,17 @@ class HashtopolisSettings:
     access_group_name: str | None = None
 
 
-SettingsT = TypeVar("SettingsT", CpuCrackSettings, HashcatSettings, HashtopolisSettings)
+@dataclass
+class WpaSecSettings:
+    """Credentials for the wpa-sec.stanev.org distributed WPA auditor. ``key`` is the per-user
+    API key from the site's Get-key page; ``auto_upload`` submits new handshake pcaps on capture."""
+    key: str | None = None
+    url: str = "https://wpa-sec.stanev.org"
+    auto_upload: bool = False
+
+
+SettingsT = TypeVar("SettingsT", CpuCrackSettings, HashcatSettings, HashtopolisSettings,
+                    WpaSecSettings)
 
 
 class Config:
@@ -68,6 +78,7 @@ class Config:
     cpu_crack: CpuCrackSettings = CpuCrackSettings()
     hashcat: HashcatSettings = HashcatSettings()
     hashtopolis: HashtopolisSettings = HashtopolisSettings()
+    wpa_sec: WpaSecSettings = WpaSecSettings()
 
     @classmethod
     def is_silenced(cls, bssid: str) -> bool:
@@ -129,6 +140,7 @@ class Config:
                               for name, value in data.items() if name.startswith("hashtopolis_")}
         cls.hashtopolis = _load_table({**legacy_hashtopolis, **_table(data, "hashtopolis")},
                                       cls.hashtopolis)
+        cls.wpa_sec = _load_table(_table(data, "wpa_sec"), cls.wpa_sec)
 
     @classmethod
     def save(cls) -> None:
@@ -150,6 +162,7 @@ class Config:
         text += _table_text("cpu_crack", cls.cpu_crack)
         text += _table_text("hashcat", cls.hashcat)
         text += _table_text("hashtopolis", cls.hashtopolis)
+        text += _table_text("wpa_sec", cls.wpa_sec)
         if cls.decloaked_ssids:
             text += "\n[decloak]\n"
             for bssid, ssid in sorted(cls.decloaked_ssids.items()):

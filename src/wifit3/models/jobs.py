@@ -6,6 +6,7 @@ class ToolName(StrEnum):
     CPU_CRACK = "cpu_crack"
     HASHCAT = "hashcat"
     HASHTOPOLIS = "hashtopolis"
+    WPA_SEC = "wpa_sec"
 
 class ToolCapability(IntFlag):
     NONE = 0
