@@ -18,6 +18,7 @@ from wifit3.campaigns.eviltwin.punter import BURST_SIZE, FRAME_GAP_SEC, Punter, 
 from wifit3.campaigns.eviltwin_enterprise.eap_server import Capture, Method
 from wifit3.campaigns.eviltwin_enterprise.fake_ap import EnterpriseFakeAP
 from wifit3.campaigns.eviltwin_enterprise.store import save_capture
+from wifit3.campaigns.eviltwin_enterprise.tls import describe_cert
 from wifit3.dot11 import str_to_mac
 from wifit3.dot11.ap import beacon_clone_enterprise
 from wifit3.dot11.csa import build_csa_beacon
@@ -128,6 +129,7 @@ class EnterpriseEvilTwinCampaign(Campaign):
             self.twin_iface, str_to_mac(self.twin_bssid), self.ssid, self.twin_channel,
             self.twin_beacon, method=self.method, gtc_downgrade=self.gtc_downgrade,
             rx_source=self.twin_iface, on_capture=self._on_capture, cert_path=self.cert_path)
+        self.log(f"[dim]Presenting certificate:[/dim] {describe_cert(self.cert_path)}")
         if self.same_bssid:
             self.array.ignore_stray_beacons(self.twin_bssid, self.twin_channel)
         else:
