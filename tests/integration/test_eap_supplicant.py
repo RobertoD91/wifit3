@@ -141,3 +141,17 @@ def test_ttls_pap_plaintext(tmp_path):
                  phase1="", phase2="auth=PAP", identity="bob", password="Secret123!")
     assert cap is not None and cap.inner_method == "PAP"
     assert cap.username == "bob" and cap.password == "Secret123!"
+
+
+def test_ttls_eap_mschapv2(tmp_path):
+    # EAP-TTLS carrying inner EAP (EAP-Message AVP), the macOS/iOS EAP-TTLS behaviour.
+    cap = _drive(tmp_path, method=Method.TTLS, gtc_downgrade=False, eap="TTLS",
+                 phase1="", phase2="autheap=MSCHAPV2", identity="ttlsmac", password="Secret123!")
+    assert cap is not None and cap.inner_method == "MSCHAPv2" and cap.username == "ttlsmac"
+
+
+def test_ttls_eap_gtc_plaintext(tmp_path):
+    cap = _drive(tmp_path, method=Method.TTLS, gtc_downgrade=True, eap="TTLS",
+                 phase1="", phase2="autheap=GTC", identity="ttlsgtc", password="GtcPass9!")
+    assert cap is not None and cap.inner_method == "GTC"
+    assert cap.username == "ttlsgtc" and cap.password == "GtcPass9!"
