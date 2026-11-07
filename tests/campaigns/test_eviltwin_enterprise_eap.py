@@ -20,14 +20,16 @@ class _PeapClient:
     """A misconfigured PEAP supplicant: accepts any certificate and answers the inner challenge with
     a fixed PeerChallenge + NT-Response (the values a real client would compute from its password)."""
 
-    def __init__(self, inner_username="corp\\alice", gtc_password="s3cr3t"):
+    def __init__(self, inner_username="corp\\alice", gtc_password="s3cr3t", junk_first=False):
         self.inner_username = inner_username
         self.gtc_password = gtc_password
+        self.junk_first = junk_first
         self.peer_challenge = bytes(range(16))
         self.nt_response = bytes(range(100, 124))
         self.auth_challenge = b""
         self.tunnel = TlsTunnel(client_context(), server_side=False, server_hostname="radius.local")
         self._in = bytearray()
+        self._sent_junk = False
         self.done = False
 
     def respond(self, pkt: bytes):
@@ -50,6 +52,9 @@ class _PeapClient:
         self.tunnel.feed(tls_in)
         if not self.tunnel.handshake_done:
             out = self.tunnel.pump_handshake()
+            if self.tunnel.handshake_done and not out and self.junk_first and not self._sent_junk:
+                self._sent_junk = True                          # a non-EAP first phase-2 packet
+                return self._tls_reply(msg.identifier, self.tunnel.write_app(b"\x00\x00\x00junk"))
             return self._tls_reply(msg.identifier, out)         # our flight, or empty ACK when done
         return self._phase2(msg.identifier)
 
@@ -105,6 +110,19 @@ def test_peap_mschapv2_capture_matches_client():
                                  client.peer_challenge, client.nt_response)
     assert cap.hashline == expected
     assert server.done
+
+
+def test_peap_recovers_from_a_non_eap_first_phase2_packet():
+    # Some supplicants send a non-EAP packet first after the tunnel; the server must re-request the
+    # inner identity rather than give up (the macOS 'could not parse the inner EAP packet' case).
+    events: list[str] = []
+    server = EapServer("CorpNet", method=Method.PEAP, on_event=events.append)
+    client = _PeapClient(inner_username="corp\\alice", junk_first=True)
+    _run(server, client)
+
+    cap = server.captured
+    assert cap is not None and cap.inner_method == "MSCHAPv2" and cap.username == "corp\\alice"
+    assert any("re-requesting inner identity" in e for e in events)
 
 
 def test_peap_gtc_downgrade_captures_plaintext():
