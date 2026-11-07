@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 
 from wifit3.campaigns.campaign import Campaign
@@ -83,10 +85,25 @@ class EnterpriseEvilTwinCampaign(Campaign):
         if stats.credentials or stats.identities:
             head.append(f"[black bold on green] ✓ {stats.credentials} creds [/black bold on green] "
                         f"[dim]· {stats.identities} identities · saved to {Config.captures_dir}[/dim]")
+            last = self._last_credential()
+            if last:
+                head.append(last)
         else:
             head.append(f"[dim]auth:{stats.auth} · assoc:{stats.assoc} · "
                         f"EAP starts:{stats.eapol_starts}[/dim]")
         return head
+
+    def _last_credential(self) -> Optional[str]:
+        """The most recent non-identity capture, for the headline."""
+        for cap in reversed(self.captures):
+            if cap.inner_method == "Identity":
+                continue
+            from rich.markup import escape
+            if cap.password is not None:
+                return (f"[dim]last:[/dim] [bold]{escape(cap.username)}[/bold] : "
+                        f"[bold yellow]{escape(cap.password)}[/bold yellow] ({cap.inner_method})")
+            return f"[dim]last:[/dim] [bold]{escape(cap.username)}[/bold] [dim](MSCHAPv2 hash)[/dim]"
+        return None
 
     def __init__(self, array, target: AccessPoint, evil_input: EnterpriseEvilTwinInput):
         if not target.last_beacon_frame:
@@ -115,6 +132,7 @@ class EnterpriseEvilTwinCampaign(Campaign):
         self.fakeap: Optional[EnterpriseFakeAP] = None
         self.captures: list[Capture] = []
         self.log: Callable[[str], None] = lambda _m: None
+        self._debug_path: Optional[Path] = None
 
     def _make_punter(self, evil_input: EnterpriseEvilTwinInput, target_bssid: str) -> Optional[Punter]:
         if not evil_input.punt_modes:
@@ -128,8 +146,10 @@ class EnterpriseEvilTwinCampaign(Campaign):
         self.fakeap = EnterpriseFakeAP(
             self.twin_iface, str_to_mac(self.twin_bssid), self.ssid, self.twin_channel,
             self.twin_beacon, method=self.method, gtc_downgrade=self.gtc_downgrade,
-            rx_source=self.twin_iface, on_capture=self._on_capture, cert_path=self.cert_path)
+            rx_source=self.twin_iface, on_capture=self._on_capture, cert_path=self.cert_path,
+            on_event=self._event)
         self.log(f"[dim]Presenting certificate:[/dim] {describe_cert(self.cert_path)}")
+        self._event(f"twin up on CH {self.twin_channel} ({self.method.value}); waiting for a client")
         if self.same_bssid:
             self.array.ignore_stray_beacons(self.twin_bssid, self.twin_channel)
         else:
@@ -148,17 +168,41 @@ class EnterpriseEvilTwinCampaign(Campaign):
                 punted = True
             await self._sleep(self.punt_period_sec or _POLL_SEC)
 
+    def _event(self, message: str) -> None:
+        """A progress milestone from the EAP server: show it on screen and append to the transcript,
+        so the demo makes visible exactly how far each client gets."""
+        self.log(f"[dim]· {message}[/dim]")
+        self._append_debug(message)
+
     def _on_capture(self, cap: Capture) -> None:
         self.captures.append(cap)
-        save_capture(cap)
+        path = save_capture(cap)
+        where = f" [dim](saved to {path})[/dim]" if path is not None else ""
         if cap.inner_method == "Identity":
-            self.log(f"[cyan]EAP identity[/cyan] [bold]{cap.username}[/bold]")
-        elif cap.password is not None:
-            self.log(f"[bold green]✓ {cap.inner_method} plaintext[/bold green] "
-                     f"[bold]{cap.username}[/bold] = {cap.password!r}")
+            self.log(f"[cyan]● EAP identity[/cyan] [bold]{cap.username}[/bold]")
+            self._append_debug(f"identity {cap.username}")
+            return
+        if cap.password is not None:
+            self.log(f"[black bold on green] ✓ {cap.inner_method} [/black bold on green] "
+                     f"[bold]{cap.username}[/bold] : [bold yellow]{cap.password}[/bold yellow]{where}")
+            self._append_debug(f"{cap.inner_method} {cap.username}:{cap.password}")
         else:
-            self.log(f"[bold green]✓ {cap.inner_method} hash[/bold green] for "
-                     f"[bold]{cap.username}[/bold] (hashcat -m 5500)")
+            self.log(f"[black bold on green] ✓ {cap.inner_method} [/black bold on green] "
+                     f"[bold]{cap.username}[/bold] [dim](hashcat -m 5500)[/dim]{where}")
+            self.log(f"  [yellow]{cap.hashline}[/yellow]")
+            self._append_debug(f"{cap.inner_method} {cap.hashline}")
+
+    def _append_debug(self, line: str) -> None:
+        from wifit3.persist.config import Config
+        from wifit3.persist.common import safe_ssid
+        if self._debug_path is None:
+            self._debug_path = Path(Config.captures_dir) / f"{safe_ssid(self.ssid)}_eap_debug.log"
+        try:
+            self._debug_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._debug_path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(f"{int(time.time())} {line}\n")
+        except OSError:
+            logger.debug("could not write enterprise EAP transcript", exc_info=True)
 
     def _target_clients(self) -> list[bytes]:
         target = self.ap.bssid.lower()
