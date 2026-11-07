@@ -78,6 +78,19 @@ async def test_identity_response_is_captured():
     assert fap.stats.identities == 1
 
 
+def test_reauth_is_silent_after_a_credential_capture():
+    events: list[str] = []
+    fap = EnterpriseFakeAP(FakeIface(), _BSSID, _SSID, 1, twin_beacon=bytes(60),
+                           on_event=events.append)
+    cs = "02:aa:bb:cc:dd:ee"
+    fap._new_server(cs).on_event("hello")
+    assert events, "a fresh client's EAP steps should be logged"
+    events.clear()
+    fap._credentialed.add(cs)                     # already captured this client's credential
+    fap._new_server(cs).on_event("again")
+    assert events == [], "a captured client's re-auth must not spam the log"
+
+
 async def test_eapol_start_also_begins_eap():
     fap = _fakeap([])
     start = data_header(to_ds=True, bssid=_BSSID, client=_CLIENT) + LLC_SNAP_EAPOL + b"\x02\x01\x00\x00"
