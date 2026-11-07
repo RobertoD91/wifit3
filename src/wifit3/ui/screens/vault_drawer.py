@@ -46,6 +46,7 @@ class VaultDrawer(ModalScreen):
         Binding("a", "add_credential", "Add Key", show=True),
         Binding("o", "show_directory", "Open Dir", show=True),
         Binding("z", "export_zip", "Export .zip", show=True),
+        Binding("u", "upload_wpa_sec", "Upload wpa-sec", show=True),
         Binding("d", "delete_ap", "Delete AP", show=True),
         Binding("q", "app.quit", "Quit", show=True),
     ]
@@ -385,3 +386,43 @@ class VaultDrawer(ModalScreen):
             self.notify("No captures yet", severity="warning")
         except OSError as exc:
             self.notify(f"Could not open captures dir: {exc}", severity="error")
+
+    def action_upload_wpa_sec(self) -> None:
+        """Queue a wpa-sec upload for every uncracked WPA/PMKID handshake, no capture to select first.
+        Prompts for the API key when it isn't set yet."""
+        from wifit3.persist.config import Config
+        from wifit3.ui.vault.modals.wpa_sec import WpaSecConfigModal
+        if not Config.wpa_sec.key:
+            self.notify("Set your wpa-sec API key, then press u again", severity="warning")
+            self.app.push_screen(WpaSecConfigModal(confirm_label="Save"),
+                                 lambda _r: self._do_wpa_sec_upload() if Config.wpa_sec.key else None)
+            return
+        self._do_wpa_sec_upload()
+
+    def _do_wpa_sec_upload(self) -> None:
+        from wifit3.models.jobs import ToolName, ToolStatus
+        from wifit3.vault.tools.wpa_sec import WpaSecTool
+        vault = self.app.vault
+        active = {j.capture_path for j in vault.manager.get_active_jobs()
+                  if j.tool_name == ToolName.WPA_SEC
+                  and j.status in (ToolStatus.QUEUED, ToolStatus.RUNNING)}
+        queued = no_pcap = 0
+        for bssid in {c.bssid for c in vault.all_captures()}:
+            state = vault.ap_state(bssid)
+            capture = state.hashline_capture
+            lines = [h for h in state.uncracked if h.line.kind in ("01", "02")]
+            if capture is None or not lines or capture.path in active:
+                continue
+            if WpaSecTool._handshake_pcap(bssid) is None:
+                no_pcap += 1
+                continue
+            vault.manager.submit_job(ToolName.WPA_SEC, capture, {}, hashlines=[h.raw for h in lines])
+            queued += 1
+        if queued:
+            tail = f"; {no_pcap} skipped (no pcap: enable Save pcap)" if no_pcap else ""
+            self.notify(f"Queued {queued} wpa-sec upload(s){tail}")
+        elif no_pcap:
+            self.notify(f"{no_pcap} handshake(s) have no pcap to upload (enable Save pcap)",
+                        severity="warning")
+        else:
+            self.notify("No uncracked WPA/PMKID handshakes to upload", severity="warning")
