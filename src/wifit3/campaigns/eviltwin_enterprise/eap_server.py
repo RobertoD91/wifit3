@@ -82,6 +82,8 @@ class EapServer:
         self._offered_gtc = gtc_downgrade
         self._phase2_retries = 0
         self._inner_headerless: Optional[bool] = None    # PEAPv0 (macOS/iOS) sends inner EAP as <type><data>
+        # Advertise our max PEAP version in the Start; the client picks down and we adopt its choice.
+        self._outer_version = 1 if method is Method.PEAP else 0
         self.captured: Optional[Capture] = None
 
     @property
@@ -110,7 +112,7 @@ class EapServer:
         self._capture_identity_only()
         self._tunnel = TlsTunnel(self._context, server_side=True)
         self._state = _State.TLS
-        return [self._request(eap_tls_body(self._outer_type, start=True))]
+        return [self._request(self._tls_body(start=True))]
 
     def _capture_identity_only(self) -> None:
         """Record the (outer) identity immediately, so a cert-validating supplicant that aborts the
@@ -121,15 +123,20 @@ class EapServer:
 
     # ----- EAP-TLS fragmentation + handshake ---------------------------------
 
+    def _tls_body(self, tls_data: bytes = b"", **flags) -> bytes:
+        return eap_tls_body(self._outer_type, tls_data, version=self._outer_version, **flags)
+
     def _on_tls_response(self, eap: EapMessage) -> list[bytes]:
         body = parse_eap_tls_body(eap.data)
         if body is None:
             return []
+        if self.method is Method.PEAP:
+            self._outer_version = body.flags & 0x07     # adopt the client's negotiated PEAP version
         if self._pending_frags:                     # peer is ACKing our outbound fragments
             return [self._next_fragment()]
         self._in_buf += body.tls_data
         if body.more:                               # more peer fragments coming: ACK and wait
-            return [self._request(eap_tls_body(self._outer_type))]
+            return [self._request(self._tls_body())]
         tls_in, self._in_buf = bytes(self._in_buf), bytearray()
         assert self._tunnel is not None
         self._tunnel.feed(tls_in)
@@ -151,7 +158,7 @@ class EapServer:
             self._await_phase2 = False
             self._announce_tls()
             return self._begin_phase2()
-        return [self._request(eap_tls_body(self._outer_type))]
+        return [self._request(self._tls_body())]
 
     def _announce_tls(self) -> None:
         if not self._announced_tls:
@@ -169,7 +176,7 @@ class EapServer:
             return self._handle_phase2(plaintext)
         plaintext = self._tunnel.read_app()
         return self._handle_phase2(plaintext) if plaintext else [
-            self._request(eap_tls_body(self._outer_type))]
+            self._request(self._tls_body())]
 
     # ----- phase 2 (inside the tunnel) ---------------------------------------
 
@@ -177,7 +184,7 @@ class EapServer:
         """PEAP prompts for an inner identity; TTLS waits for the client's AVPs."""
         if self.method is Method.PEAP:
             return self._inner_send(EAP_TYPE_IDENTITY)
-        return [self._request(eap_tls_body(self._outer_type))]
+        return [self._request(self._tls_body())]
 
     def _parse_inner(self, plaintext: bytes) -> Optional[EapMessage]:
         """Decode a tunneled EAP packet, PEAPv1 (full EAP header) or PEAPv0 (macOS/iOS: the Code/Id/
@@ -316,13 +323,13 @@ class EapServer:
         frags = [out_tls[i:i + MAX_TLS_FRAGMENT] for i in range(0, len(out_tls), MAX_TLS_FRAGMENT)]
         self._pending_frags = frags[1:]
         more = len(frags) > 1
-        body = eap_tls_body(self._outer_type, frags[0], total_length=len(out_tls), more=more)
+        body = self._tls_body(frags[0], total_length=len(out_tls), more=more)
         return [self._request(body)]
 
     def _next_fragment(self) -> bytes:
         frag = self._pending_frags.pop(0)
         more = bool(self._pending_frags)
-        return self._request(eap_tls_body(self._outer_type, frag, more=more))
+        return self._request(self._tls_body(frag, more=more))
 
 
 def _looks_like_eap(plaintext: bytes) -> bool:
