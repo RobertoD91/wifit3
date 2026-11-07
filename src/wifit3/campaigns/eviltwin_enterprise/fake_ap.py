@@ -62,6 +62,7 @@ class EnterpriseFakeAP:
         self._context = server_context(cert_path)              # one cert, shared by every client
         self._servers: Dict[str, EapServer] = {}
         self._recorded: set[tuple[str, str]] = set()
+        self._credentialed: set[str] = set()                   # clients whose credential we already have
         self._probe_resp = self._probe_resp_from(twin_beacon)
         self._running = False
         self._fake_mac_armed = False
@@ -189,9 +190,15 @@ class EnterpriseFakeAP:
 
     def _new_server(self, cs: str) -> EapServer:
         short = cs.replace(":", "")[-4:]                       # last 2 octets, to tag the client
+
+        def emit(message: str) -> None:
+            # A client whose credential we already captured keeps re-authenticating (the post-EAP
+            # 4-way always fails on a rogue AP); handle those rounds silently so the log stays clean.
+            if cs not in self._credentialed:
+                self.on_event(f"[{short}] {message}")
+
         server = EapServer(self.ssid, method=self.method, gtc_downgrade=self.gtc_downgrade,
-                           context=self._context, server_name=self.server_name,
-                           on_event=lambda m, tag=short: self.on_event(f"[{tag}] {m}"))
+                           context=self._context, server_name=self.server_name, on_event=emit)
         self._servers[cs] = server
         return server
 
@@ -227,6 +234,7 @@ class EnterpriseFakeAP:
             self.stats.identities += 1
         else:
             self.stats.credentials += 1
+            self._credentialed.add(mac_to_str(client))         # silence this client's later re-auths
         self.on_capture(cap)
 
     def _emit(self, client: bytes, eap_packets: list) -> None:
