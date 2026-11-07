@@ -104,11 +104,20 @@ class AutoAttack:
         self._running = True
         self._log(f"[bold cyan]Auto-Attack started[/bold cyan] "
                   f"({'aggressive' if self.aggressive else 'passive'})")
+        announced_idle = False
         try:
             while not self._stopped:
                 targets = self._pick_targets()
                 if targets:
+                    announced_idle = False
+                    self._log(f"[cyan]▸ attacking {len(targets)} target(s)[/cyan]")
                     await self._attack_batch(targets)
+                elif not announced_idle:
+                    announced_idle = True
+                    kind = ("WEP / WPS / WPA·WPA2-PSK" if self.aggressive
+                            else "WPA / WPA2-PSK (PMKID)")
+                    self._log(f"[dim]No eligible targets yet: need {kind}; enterprise and excluded "
+                              f"SSIDs are skipped. Still scanning…[/dim]")
                 await self._interruptible_sleep(self.scan_window_sec)
         finally:
             self.current = None
@@ -139,7 +148,12 @@ class AutoAttack:
                         break
                     if self._on_cooldown(ap.bssid, cls.key):
                         continue
-                    await self._run_one(ap, cls)
+                    try:
+                        await self._run_one(ap, cls)
+                    except Exception:               # noqa: BLE001 - one bad target must not end the run
+                        logger.exception("auto-attack: %s on %s failed", cls.key, ap.bssid)
+                        self._log(f"[red]✗ {cls.idle_label} on {ap.ssid or ap.bssid} errored; "
+                                  f"continuing[/red]")
         finally:
             await self._resume_hopping()
 
