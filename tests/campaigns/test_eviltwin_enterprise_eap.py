@@ -90,12 +90,16 @@ def _run(server: EapServer, client: _PeapClient) -> None:
 
 
 def test_peap_mschapv2_capture_matches_client():
-    server = EapServer("CorpNet", method=Method.PEAP)
+    events: list[str] = []
+    server = EapServer("CorpNet", method=Method.PEAP, on_event=events.append)
     client = _PeapClient(inner_username="corp\\alice")
     _run(server, client)
 
     cap = server.captured
     assert cap is not None and cap.inner_method == "MSCHAPv2"
+    joined = " | ".join(events)
+    assert "TLS tunnel established" in joined         # progress milestones are emitted for the demo
+    assert "offering inner MSCHAPv2" in joined
     assert cap.username == "corp\\alice"
     expected = mschapv2_hashline("corp\\alice", client.auth_challenge,
                                  client.peer_challenge, client.nt_response)

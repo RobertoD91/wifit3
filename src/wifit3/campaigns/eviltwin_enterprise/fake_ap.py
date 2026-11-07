@@ -45,7 +45,8 @@ class EnterpriseFakeAP:
     def __init__(self, iface, bssid: bytes, ssid: str, channel: int, twin_beacon: bytes, *,
                  method: Method = Method.PEAP, gtc_downgrade: bool = False, rx_source=None,
                  on_capture: Optional[Callable[[Capture], None]] = None,
-                 server_name: str = "wifit3", cert_path: Optional[str] = None) -> None:
+                 server_name: str = "wifit3", cert_path: Optional[str] = None,
+                 on_event: Optional[Callable[[str], None]] = None) -> None:
         self.iface = iface
         self.bssid = bssid
         self.ssid = ssid
@@ -55,6 +56,7 @@ class EnterpriseFakeAP:
         self.gtc_downgrade = gtc_downgrade
         self.rx_source = rx_source
         self.on_capture = on_capture or (lambda _c: None)
+        self.on_event = on_event or (lambda _m: None)
         self.server_name = server_name
         self.stats = EnterpriseStats()
         self._context = server_context(cert_path)              # one cert, shared by every client
@@ -185,11 +187,16 @@ class EnterpriseFakeAP:
         self.stats.eapol_starts += 1
         self._begin_eap(client)
 
-    def _begin_eap(self, client: bytes) -> None:
+    def _new_server(self, cs: str) -> EapServer:
+        short = cs.replace(":", "")[-4:]                       # last 2 octets, to tag the client
         server = EapServer(self.ssid, method=self.method, gtc_downgrade=self.gtc_downgrade,
-                           context=self._context, server_name=self.server_name)
-        self._servers[mac_to_str(client)] = server
-        self._emit(client, server.start())
+                           context=self._context, server_name=self.server_name,
+                           on_event=lambda m, tag=short: self.on_event(f"[{tag}] {m}"))
+        self._servers[cs] = server
+        return server
+
+    def _begin_eap(self, client: bytes) -> None:
+        self._emit(client, self._new_server(mac_to_str(client)).start())
 
     def _on_eap(self, client: bytes, raw: bytes) -> None:
         message = eap_from_frame(raw)
@@ -197,9 +204,7 @@ class EnterpriseFakeAP:
             return
         server = self._servers.get(mac_to_str(client))
         if server is None:
-            server = EapServer(self.ssid, method=self.method, gtc_downgrade=self.gtc_downgrade,
-                               context=self._context, server_name=self.server_name)
-            self._servers[mac_to_str(client)] = server
+            server = self._new_server(mac_to_str(client))
         try:
             outgoing = server.receive(message)
         except Exception:
