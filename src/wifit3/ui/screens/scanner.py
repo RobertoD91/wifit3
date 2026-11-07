@@ -170,6 +170,7 @@ class ScannerView(Screen):
         Binding("l", "toggle_log", "Toggle Log", show=True),
         Binding("w", "wps_pbc_mode", "WPS PBC", show=True),
         Binding("a", "auto_attack", "Auto-Attack", show=True),
+        Binding("E", "rogue_enterprise", "Rogue EAP AP", show=True),
         Binding("v", "open_vault", "Vault", show=True),
         Binding("home", "scroll_home", "Top", show=False, priority=True),
         Binding("end", "scroll_end", "Bottom", show=False, priority=True),
@@ -517,6 +518,29 @@ class ScannerView(Screen):
     def _stop_auto_attack(self) -> None:
         if self._auto_attack is not None:
             self._auto_attack.request_stop()
+
+    # ----- Rogue WPA-Enterprise AP (no target in range) ----------------------
+
+    def action_rogue_enterprise(self) -> None:
+        """Stand up an enterprise evil twin for a chosen SSID with no real AP present."""
+        array = self.app.array
+        if array is None or not array.members:
+            self.notify("No active interface", severity="error")
+            return
+        from .rogue_enterprise_modal import RogueEnterpriseModal
+        self.app.push_screen(RogueEnterpriseModal(), self._enter_rogue_enterprise)
+
+    def _enter_rogue_enterprise(self, result: Optional[tuple[str, int, str]]) -> None:
+        if result is None:
+            return
+        ssid, channel, bssid = result
+        from wifit3.campaigns.eviltwin_enterprise.synthetic import synthetic_enterprise_ap
+        ap = synthetic_enterprise_ap(ssid, channel, bssid)
+        self.ap_cache[ap.bssid] = ap               # so selected_ap()/Focus can resolve it
+        if getattr(self, "_auto_attack", None) is not None:
+            self._auto_attack.request_stop()       # Focus owns the radio; stop any auto-attack
+        self.app.target_ap = ap
+        self.app.push_screen(self.app.focus_view)
 
     def selected_ap(self) -> Optional[AccessPoint]:
         bssid = self.query_one("#ap-table", APTable).cursor_bssid
