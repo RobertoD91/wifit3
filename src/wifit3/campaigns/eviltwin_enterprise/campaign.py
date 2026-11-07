@@ -76,21 +76,23 @@ class EnterpriseEvilTwinCampaign(Campaign):
         return "● Enterprise Twin"
 
     def status_headlines(self, vault) -> list[str]:
+        """Always three lines, so the panel never changes height and the layout cannot jump."""
         from wifit3.persist.config import Config
         stats = getattr(self.fakeap, "stats", None)
         method = self.method.value + (" + GTC down" if self.gtc_downgrade else "")
         if stats is None:
-            return [f"[bold cyan]Enterprise twin arming…[/bold cyan] on CH {self.twin_channel}"]
-        head = [f"[bold cyan]Enterprise twin active[/bold cyan] ({method}) on CH {self.twin_channel}"]
-        if stats.credentials or stats.identities:
-            head.append(f"[black bold on green] ✓ {stats.credentials} creds [/black bold on green] "
-                        f"[dim]· {stats.identities} identities · saved to {Config.captures_dir}[/dim]")
-            last = self._last_credential()
-            if last:
-                head.append(last)
+            return [f"[bold cyan]Enterprise twin arming…[/bold cyan] on CH {self.twin_channel}",
+                    "[dim] [/dim]", "[dim] [/dim]"]
+        head = [f"[bold cyan]Enterprise twin active[/bold cyan] ({method}) on CH {self.twin_channel}",
+                f"[dim]auth:{stats.auth} · assoc:{stats.assoc} · EAP starts:{stats.eapol_starts} · "
+                f"creds:{stats.credentials} · ids:{stats.identities}[/dim]"]
+        last = self._last_credential()
+        if last:
+            head.append(last)
+        elif stats.identities:
+            head.append(f"[dim]identities captured; saved to {Config.captures_dir}[/dim]")
         else:
-            head.append(f"[dim]auth:{stats.auth} · assoc:{stats.assoc} · "
-                        f"EAP starts:{stats.eapol_starts}[/dim]")
+            head.append("[dim] [/dim]")
         return head
 
     def _last_credential(self) -> Optional[str]:

@@ -12,7 +12,6 @@ from textual.widgets import Button, Checkbox, Input, Label, Select
 from wifit3.campaigns.eviltwin import PuntMode
 from wifit3.campaigns.eviltwin_enterprise.campaign import EnterpriseEvilTwinInput
 from wifit3.campaigns.eviltwin_enterprise.eap_server import Method
-from wifit3.dot11.pmf import PmfPosture
 from wifit3.persist.config import Config
 from wifit3.ui.screens.focus_v2.art import display_name
 from wifit3.ui.screens.focus_v2.eviltwin_modal import _can_host
@@ -68,10 +67,11 @@ class EnterpriseEvilTwinModal(ModalScreen[Optional[EnterpriseEvilTwinInput]]):
                 yield Label("Server certificate PEM (optional, cert+key; blank = bundled):")
                 yield Input(Config.eviltwin_cert_path, placeholder="/path/to/server.pem",
                             id="ent-cert")
-                yield Checkbox("Evict clients from the real AP (deauth)",
-                               value=self.target.pmf_posture not in (PmfPosture.REQUIRED,
-                                                                     PmfPosture.INVALID),
+                yield Checkbox("Evict clients off a co-channel real AP (deauth)", value=False,
                                id="ent-deauth")
+                yield Label("[dim]Off for a honeypot: with this BSSID a deauth punt would kick "
+                            "your own clients and break the login. Only for evicting clients from a "
+                            "real AP on the same channel.[/dim]")
                 with Horizontal(id="ent-buttons"):
                     yield Button("Cancel", variant="error", id="ent-cancel")
                     yield Button("Start", variant="success", id="ent-confirm")
