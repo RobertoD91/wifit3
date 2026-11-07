@@ -20,16 +20,16 @@ class _PeapClient:
     """A misconfigured PEAP supplicant: accepts any certificate and answers the inner challenge with
     a fixed PeerChallenge + NT-Response (the values a real client would compute from its password)."""
 
-    def __init__(self, inner_username="corp\\alice", gtc_password="s3cr3t", junk_first=False):
+    def __init__(self, inner_username="corp\\alice", gtc_password="s3cr3t", headerless=False):
         self.inner_username = inner_username
         self.gtc_password = gtc_password
-        self.junk_first = junk_first
+        self.headerless = headerless                   # PEAPv0: inner EAP is <type><data>, no header
         self.peer_challenge = bytes(range(16))
         self.nt_response = bytes(range(100, 124))
         self.auth_challenge = b""
         self.tunnel = TlsTunnel(client_context(), server_side=False, server_hostname="radius.local")
         self._in = bytearray()
-        self._sent_junk = False
+        self._sent_inner_identity = False
         self.done = False
 
     def respond(self, pkt: bytes):
@@ -52,28 +52,34 @@ class _PeapClient:
         self.tunnel.feed(tls_in)
         if not self.tunnel.handshake_done:
             out = self.tunnel.pump_handshake()
-            if self.tunnel.handshake_done and not out and self.junk_first and not self._sent_junk:
-                self._sent_junk = True                          # a non-EAP first phase-2 packet
-                return self._tls_reply(msg.identifier, self.tunnel.write_app(b"\x00\x00\x00junk"))
+            if self.tunnel.handshake_done and not out and self.headerless and not self._sent_inner_identity:
+                self._sent_inner_identity = True                # PEAPv0: send inner identity, headerless
+                payload = bytes([EAP_TYPE_IDENTITY]) + self.inner_username.encode()
+                return self._tls_reply(msg.identifier, self.tunnel.write_app(payload))
             return self._tls_reply(msg.identifier, out)         # our flight, or empty ACK when done
         return self._phase2(msg.identifier)
 
     def _phase2(self, outer_id: int):
-        inner = parse_eap(self.tunnel.read_app())
-        assert inner is not None and inner.code == EAP_REQUEST
-        if inner.method_type == EAP_TYPE_IDENTITY:
-            reply = eap_packet(EAP_RESPONSE, inner.identifier, EAP_TYPE_IDENTITY,
-                               self.inner_username.encode())
-        elif inner.method_type == EAP_TYPE_MSCHAPV2:
-            self.auth_challenge = inner.data[5:21]
+        plaintext = self.tunnel.read_app()
+        if self.headerless:
+            req_type, req_id, req_data = plaintext[0], 0, plaintext[1:]
+        else:
+            inner = parse_eap(plaintext)
+            assert inner is not None and inner.code == EAP_REQUEST, plaintext.hex()
+            req_type, req_id, req_data = inner.method_type, inner.identifier, inner.data
+        if req_type == EAP_TYPE_IDENTITY:
+            resp = self.inner_username.encode()
+        elif req_type == EAP_TYPE_MSCHAPV2:
+            self.auth_challenge = req_data[5:21]
             name = self.inner_username.encode()
             value = self.peer_challenge + b"\x00" * 8 + self.nt_response + b"\x00"
-            data = struct.pack(">BBH", 2, inner.data[1], 4 + 1 + 49 + len(name)) + bytes([49]) + value + name
-            reply = eap_packet(EAP_RESPONSE, inner.identifier, EAP_TYPE_MSCHAPV2, data)
-        elif inner.method_type == EAP_TYPE_GTC:
-            reply = eap_packet(EAP_RESPONSE, inner.identifier, EAP_TYPE_GTC, self.gtc_password.encode())
+            resp = struct.pack(">BBH", 2, req_data[1], 4 + 1 + 49 + len(name)) + bytes([49]) + value + name
+        elif req_type == EAP_TYPE_GTC:
+            resp = self.gtc_password.encode()
         else:
-            raise AssertionError(f"unexpected inner type {inner.method_type}")
+            raise AssertionError(f"unexpected inner type {req_type}")
+        reply = (bytes([req_type]) + resp if self.headerless
+                 else eap_packet(EAP_RESPONSE, req_id, req_type, resp))
         return self._tls_reply(outer_id, self.tunnel.write_app(reply))
 
     def _tls_reply(self, outer_id: int, out: bytes) -> bytes:
@@ -112,17 +118,18 @@ def test_peap_mschapv2_capture_matches_client():
     assert server.done
 
 
-def test_peap_recovers_from_a_non_eap_first_phase2_packet():
-    # Some supplicants send a non-EAP packet first after the tunnel; the server must re-request the
-    # inner identity rather than give up (the macOS 'could not parse the inner EAP packet' case).
-    events: list[str] = []
-    server = EapServer("CorpNet", method=Method.PEAP, on_event=events.append)
-    client = _PeapClient(inner_username="corp\\alice", junk_first=True)
+def test_peapv0_headerless_inner_is_captured():
+    # macOS / iOS PEAPv0: the inner EAP packets drop the Code/Id/Length header and the client sends
+    # its inner identity first, unprompted. The server must parse <type><data> and still capture.
+    server = EapServer("CorpNet", method=Method.PEAP)
+    client = _PeapClient(inner_username="htdfggh", headerless=True)
     _run(server, client)
 
     cap = server.captured
-    assert cap is not None and cap.inner_method == "MSCHAPv2" and cap.username == "corp\\alice"
-    assert any("re-requesting inner identity" in e for e in events)
+    assert cap is not None and cap.inner_method == "MSCHAPv2" and cap.username == "htdfggh"
+    expected = mschapv2_hashline("htdfggh", client.auth_challenge,
+                                 client.peer_challenge, client.nt_response)
+    assert cap.hashline == expected
 
 
 def test_peap_gtc_downgrade_captures_plaintext():

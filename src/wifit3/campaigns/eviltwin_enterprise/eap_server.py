@@ -81,6 +81,7 @@ class EapServer:
         self._auth_challenge = b""
         self._offered_gtc = gtc_downgrade
         self._phase2_retries = 0
+        self._inner_headerless: Optional[bool] = None    # PEAPv0 (macOS/iOS) sends inner EAP as <type><data>
         self.captured: Optional[Capture] = None
 
     @property
@@ -175,18 +176,39 @@ class EapServer:
     def _begin_phase2(self) -> list[bytes]:
         """PEAP prompts for an inner identity; TTLS waits for the client's AVPs."""
         if self.method is Method.PEAP:
-            return self._tunnel_send(eap_packet(EAP_REQUEST, self._bump_inner(), EAP_TYPE_IDENTITY))
+            return self._inner_send(EAP_TYPE_IDENTITY)
         return [self._request(eap_tls_body(self._outer_type))]
+
+    def _parse_inner(self, plaintext: bytes) -> Optional[EapMessage]:
+        """Decode a tunneled EAP packet, PEAPv1 (full EAP header) or PEAPv0 (macOS/iOS: the Code/Id/
+        Length header is dropped, so it is just ``<Type><Data>``). The format is latched on the first
+        inner packet and reused for what we send back."""
+        if not plaintext:
+            return None
+        headered = parse_eap(plaintext)
+        if headered is not None and headered.code == EAP_RESPONSE and headered.method_type is not None:
+            if self._inner_headerless is None:
+                self._inner_headerless = False
+            return headered
+        if self._inner_headerless is None:
+            self._inner_headerless = True
+        return EapMessage(code=EAP_RESPONSE, identifier=0, method_type=plaintext[0],
+                          data=plaintext[1:])
+
+    def _inner_send(self, method_type: int, data: bytes = b"") -> list[bytes]:
+        """Send a tunneled EAP request in whichever inner format the client is using."""
+        full = eap_packet(EAP_REQUEST, self._bump_inner(), method_type, data)
+        inner = full[4:] if self._inner_headerless else full      # drop Code/Id/Length for PEAPv0
+        assert self._tunnel is not None
+        return self._emit_tls(self._tunnel.write_app(inner))
 
     def _handle_phase2(self, plaintext: bytes) -> list[bytes]:
         if self.method is Method.TTLS and not _looks_like_eap(plaintext):
             return self._handle_ttls_pap(plaintext)
-        inner = parse_eap(plaintext)
+        inner = self._parse_inner(plaintext)
         if inner is None:
-            return self._retry_or_finish("inner is not a parseable EAP packet", plaintext)
-        if inner.code != EAP_RESPONSE:
-            return self._retry_or_finish(f"inner EAP code {inner.code} is not a Response", plaintext)
-        self._phase2_retries = 0                      # a real inner Response: we're on track
+            return self._retry_or_finish("empty inner phase-2 packet", plaintext)
+        self._phase2_retries = 0                      # a real inner packet: we're on track
         if inner.method_type == EAP_TYPE_IDENTITY:
             self.inner_username = inner.data.decode("utf-8", errors="replace").strip("\x00")
             self.on_event(f"inner identity = {self.inner_username or '<empty>'}")
@@ -214,12 +236,11 @@ class EapServer:
     def _send_inner_challenge(self) -> list[bytes]:
         self.on_event(f"offering inner {'EAP-GTC (downgrade)' if self._offered_gtc else 'MSCHAPv2'}")
         if self._offered_gtc:
-            prompt = b"Password"
-            return self._tunnel_send(eap_packet(EAP_REQUEST, self._bump_inner(), EAP_TYPE_GTC, prompt))
+            return self._inner_send(EAP_TYPE_GTC, b"Password")
         self._auth_challenge = os.urandom(16)
-        data = mschapv2.challenge_request_data(self._bump_inner(), self._auth_challenge,
+        data = mschapv2.challenge_request_data(1, self._auth_challenge,
                                                self.server_name.encode("utf-8"))
-        return self._tunnel_send(eap_packet(EAP_REQUEST, self._inner_id, EAP_TYPE_MSCHAPV2, data))
+        return self._inner_send(EAP_TYPE_MSCHAPV2, data)
 
     def _on_inner_nak(self, inner: EapMessage) -> list[bytes]:
         """The supplicant rejected our method and listed the ones it wants; switch to GTC or
@@ -287,10 +308,6 @@ class EapServer:
     def _bump_inner(self) -> int:
         self._inner_id = (self._inner_id % 255) + 1
         return self._inner_id
-
-    def _tunnel_send(self, inner_eap: bytes) -> list[bytes]:
-        assert self._tunnel is not None
-        return self._emit_tls(self._tunnel.write_app(inner_eap))
 
     def _emit_tls(self, out_tls: bytes) -> list[bytes]:
         """Fragment outbound TLS into EAP-TLS packets; queue all but the first for the peer's ACKs."""
