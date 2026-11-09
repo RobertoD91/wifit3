@@ -318,7 +318,7 @@ def status_headlines(ap: AccessPoint, array: WlanArray, vault: Vault) -> list[st
     if eap_only(ap):
         wpa_label = "WPA3" if ap.wpa3 else ("WPA2" if ap.rsn_valid else "WPA")
         return [f"[cyan]● {wpa_label}/Enterprise (802.1X)[/cyan]",
-                "[dim]press Enterprise Twin to harvest EAP identities + credentials[/dim]"]
+                "[dim]press Enterprise Twin: an 802.1X twin to harvest EAP identities + credentials[/dim]"]
 
     if no_passphrase(ap):
         return ["[dim]● OWE (Enhanced Open): Diffie-Hellman key, nothing to crack[/dim]"]

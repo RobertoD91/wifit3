@@ -181,7 +181,7 @@ def beacon_clone(real_beacon: bytes, decoy_channel: int, bssid: Optional[bytes] 
 
 def beacon_clone_enterprise(real_beacon: bytes, decoy_channel: int, bssid: Optional[bytes] = None, *,
                             pmf_capable: bool = False) -> bytes:
-    """A twin beacon advertising WPA2/WPA3-Enterprise (802.1X AKM), for the rogue authenticator."""
+    """A twin beacon advertising WPA2-Enterprise (802.1X AKM), for the rogue authenticator."""
     return beacon_clone(real_beacon, decoy_channel, bssid, akm=AKM_802_1X, pmf_capable=pmf_capable,
                         fallback_rsn=GENERIC_RSN_IE_ENTERPRISE)
 

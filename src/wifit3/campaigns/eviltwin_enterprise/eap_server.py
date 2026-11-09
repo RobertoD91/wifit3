@@ -19,13 +19,12 @@ from typing import Callable, Optional
 
 from wifit3.crack.netntlm_format import mschapv2_hashlines, plaintext_line
 from wifit3.dot11 import mschapv2
-from wifit3.dot11.eap import EAP_RESPONSE
+from wifit3.dot11.eap import EAP_REQUEST, EAP_RESPONSE
 from wifit3.dot11.eap_build import (
     EAP_TYPE_GTC, EAP_TYPE_IDENTITY, EAP_TYPE_MSCHAPV2, EAP_TYPE_NAK, EAP_TYPE_PEAP, EAP_TYPE_TTLS,
     EapMessage, eap_frame, eap_packet, eap_request_identity, eap_success, eap_tls_body,
     parse_eap, parse_eap_tls_body,
 )
-from wifit3.dot11.eap import EAP_REQUEST
 from wifit3.campaigns.eviltwin_enterprise.tls import TlsTunnel, server_context
 
 logger = logging.getLogger(__name__)
