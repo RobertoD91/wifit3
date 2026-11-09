@@ -1,6 +1,6 @@
 """EnterpriseFakeAP: the rogue 802.1X access point (beacon + responder + per-client EAP server).
 
-Beacons a WPA2/WPA3-Enterprise twin, answers probe/auth/assoc, and relays EAPOL-EAP frames to a
+Beacons a WPA2-Enterprise (802.1X) twin, answers probe/auth/assoc, and relays EAPOL-EAP frames to a
 per-client ``EapServer`` that harvests the identity and the MSCHAPv2 / GTC / PAP credential. Emits
 nothing to the UI; the campaign polls ``stats`` and is handed each capture via ``on_capture``.
 """

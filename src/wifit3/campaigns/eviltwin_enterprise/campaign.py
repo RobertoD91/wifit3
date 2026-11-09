@@ -196,10 +196,12 @@ class EnterpriseEvilTwinCampaign(Campaign):
                 self._append_debug(f"{cap.inner_method} {line}")
 
     def _append_debug(self, line: str) -> None:
+        # The EAP transcript is verbose diagnostics, kept in a debug/ subdir so it never co-mingles
+        # with the harvested credential files it would otherwise sit beside in captures/.
         from wifit3.persist.config import Config
         from wifit3.persist.common import safe_ssid
         if self._debug_path is None:
-            self._debug_path = Path(Config.captures_dir) / f"{safe_ssid(self.ssid)}_eap_debug.log"
+            self._debug_path = Path(Config.captures_dir) / "eap_debug" / f"{safe_ssid(self.ssid)}.log"
         try:
             self._debug_path.parent.mkdir(parents=True, exist_ok=True)
             with self._debug_path.open("a", encoding="utf-8", newline="\n") as handle:

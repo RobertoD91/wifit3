@@ -53,3 +53,19 @@ the password the twin is trying to steal. A valid server certificate is necessar
 - `tls.py` — the memory-BIO TLS tunnel, cert loading (`server_context`), and `describe_cert`.
 - `store.py` — writes captures under `captures/`, deduped.
 - `assets/eap_server.pem` — the bundled self-signed default certificate (replaceable, see above).
+
+## Credits
+
+The idea and the capture format come from prior tools; this is an independent, from-scratch
+reimplementation from the public specifications that uses none of their code:
+
+- **EAPHammer** (Gabriel "s0lst1c3" Ryan) — https://github.com/s0lst1c3/eaphammer — the rogue-AP EAP
+  credential-harvest model this campaign follows.
+- **hostapd-wpe** (Brad Antoniewicz) — the original "wireless pwnage edition" EAP server that proved
+  the technique.
+- **asleap** (Joshua Wright) and **chapcrack** (Moxie Marlinspike) — the MS-CHAPv2 attack and the
+  `hashcat -m 5500` line format this tool emits.
+
+The protocol logic follows the public RFCs directly — RFC 5216 (EAP-TLS), RFC 5281 (EAP-TTLS),
+RFC 2759 (MS-CHAPv2) and the PEAP drafts. Because nothing is derived from those projects' source,
+only from the specs and their observable behaviour, wifit3 stays GPL-2.0-only.
