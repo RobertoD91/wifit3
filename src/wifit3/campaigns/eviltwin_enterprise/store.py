@@ -17,14 +17,14 @@ from wifit3.persist.config import Config
 logger = logging.getLogger(__name__)
 
 
-def capture_line(cap: Capture) -> str:
-    """The on-disk line for a capture: the hashcat -m 5500 line, a ``user:pass`` line, or the
+def capture_lines(cap: Capture) -> list[str]:
+    """The on-disk lines for a capture: every hashcat -m 5500 line, a ``user:pass`` line, or the
     bare identity username."""
     if cap.hashline:
-        return cap.hashline
+        return list(cap.all_hashlines)
     if cap.password is not None:
-        return plaintext_line(cap.username, cap.password)
-    return cap.username
+        return [plaintext_line(cap.username, cap.password)]
+    return [cap.username]
 
 
 def _suffix(cap: Capture) -> str:
@@ -42,13 +42,15 @@ def save_capture(cap: Capture, captures_dir: Optional[Path] = None) -> Optional[
         return None
     directory = Path(captures_dir) if captures_dir is not None else Path(Config.captures_dir)
     path = directory / f"{safe_ssid(cap.ssid)}{_suffix(cap)}"
-    line = capture_line(cap)
+    lines = capture_lines(cap)
     try:
         directory.mkdir(parents=True, exist_ok=True)
-        if path.exists() and line in path.read_text("utf-8", errors="replace").splitlines():
+        existing = path.read_text("utf-8", errors="replace").splitlines() if path.exists() else []
+        new = [line for line in lines if line not in existing]
+        if not new:
             return path
         with path.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(line + "\n")
+            handle.write("".join(line + "\n" for line in new))
     except OSError:
         logger.exception("failed to save enterprise capture to %s", path)
         return None

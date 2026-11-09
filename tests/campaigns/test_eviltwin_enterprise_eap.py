@@ -8,7 +8,7 @@ import struct
 
 from wifit3.campaigns.eviltwin_enterprise.eap_server import EapServer, Method
 from wifit3.campaigns.eviltwin_enterprise.tls import TlsTunnel, client_context
-from wifit3.crack.netntlm_format import mschapv2_hashline
+from wifit3.crack.netntlm_format import mschapv2_hashline, mschapv2_hashlines
 from wifit3.dot11.eap import EAP_FAILURE, EAP_REQUEST, EAP_RESPONSE, EAP_SUCCESS
 from wifit3.dot11.eap_build import (
     EAP_TYPE_GTC, EAP_TYPE_IDENTITY, EAP_TYPE_MSCHAPV2, EAP_TYPE_PEAP,
@@ -20,8 +20,10 @@ class _PeapClient:
     """A misconfigured PEAP supplicant: accepts any certificate and answers the inner challenge with
     a fixed PeerChallenge + NT-Response (the values a real client would compute from its password)."""
 
-    def __init__(self, inner_username="corp\\alice", gtc_password="s3cr3t", headerless=False):
+    def __init__(self, inner_username="corp\\alice", gtc_password="s3cr3t", headerless=False,
+                 mschap_name=None):
         self.inner_username = inner_username
+        self.mschap_name = mschap_name if mschap_name is not None else inner_username
         self.gtc_password = gtc_password
         self.headerless = headerless                   # PEAPv0: inner EAP is <type><data>, no header
         self.peer_challenge = bytes(range(16))
@@ -71,7 +73,7 @@ class _PeapClient:
             resp = self.inner_username.encode()
         elif req_type == EAP_TYPE_MSCHAPV2:
             self.auth_challenge = req_data[5:21]
-            name = self.inner_username.encode()
+            name = self.mschap_name.encode()
             value = self.peer_challenge + b"\x00" * 8 + self.nt_response + b"\x00"
             resp = struct.pack(">BBH", 2, req_data[1], 4 + 1 + 49 + len(name)) + bytes([49]) + value + name
         elif req_type == EAP_TYPE_GTC:
@@ -116,6 +118,26 @@ def test_peap_mschapv2_capture_matches_client():
                                  client.peer_challenge, client.nt_response)
     assert cap.hashline == expected
     assert server.done
+
+
+def test_mschapv2_hash_uses_response_name_not_inner_identity():
+    # The client answers the inner EAP-Identity anonymously but signs its MSCHAPv2 response as
+    # corp\alice. The ChallengeHash binds the name the client hashed, so the capture must key off the
+    # response name; keying off the anonymous inner identity would write an uncrackable hash.
+    server = EapServer("CorpNet", method=Method.PEAP)
+    client = _PeapClient(inner_username="anonymous", mschap_name="corp\\alice")
+    _run(server, client)
+
+    cap = server.captured
+    assert cap is not None and cap.inner_method == "MSCHAPv2"
+    assert cap.username == "corp\\alice"
+    expected = mschapv2_hashlines("corp\\alice", client.auth_challenge,
+                                  client.peer_challenge, client.nt_response)
+    assert cap.all_hashlines == tuple(expected)
+    # a domain-qualified name yields both the qualified line and a stripped "alice" line
+    assert len(expected) == 2
+    assert cap.hashline == expected[0]
+    assert "corp\\alice::::" in expected[0] and "alice::::" in expected[1]
 
 
 def test_peapv0_headerless_inner_is_captured():

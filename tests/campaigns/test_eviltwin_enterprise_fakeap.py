@@ -2,6 +2,7 @@
 is captured. No TLS (the tunnel only starts once an identity arrives)."""
 import asyncio
 import struct
+import time
 
 from wifit3.campaigns.eviltwin_enterprise.fake_ap import EnterpriseFakeAP
 from wifit3.dot11.auth_assoc import assoc_req, auth_req
@@ -55,6 +56,10 @@ async def _flush():
     await asyncio.sleep(0.01)
 
 
+def _seq_of(frame: bytes) -> int:
+    return struct.unpack_from("<H", frame, 22)[0] >> 4
+
+
 async def test_assoc_triggers_identity_request():
     fap = _fakeap([])
     fap.on_rx(_parse(auth_req(_BSSID, _CLIENT)))
@@ -89,6 +94,37 @@ def test_reauth_is_silent_after_a_credential_capture():
     fap._credentialed.add(cs)                     # already captured this client's credential
     fap._new_server(cs).on_event("again")
     assert events == [], "a captured client's re-auth must not spam the log"
+
+
+async def test_tx_frames_carry_incrementing_sequence_numbers():
+    fap = _fakeap([])
+    fap.on_rx(_parse(auth_req(_BSSID, _CLIENT)))
+    await _flush()
+    fap.on_rx(_parse(assoc_req(_BSSID, _CLIENT, _SSID)))
+    await _flush()
+    seqs = [_seq_of(f) for f in fap.iface.sent]
+    assert len(seqs) >= 2
+    assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs), f"non-incrementing seqs: {seqs}"
+
+
+async def test_eap_from_unseen_client_is_ignored():
+    fap = _fakeap([])
+    # an EAP response with no prior auth / assoc / EAPOL-Start: nothing should answer it
+    fap.on_rx(_parse(_client_eap(eap_packet(EAP_RESPONSE, 1, EAP_TYPE_IDENTITY, b"anon@corp"))))
+    await _flush()
+    assert fap._servers == {}
+    assert fap.iface.sent == []
+
+
+def test_idle_sessions_are_reaped():
+    fap = _fakeap([])
+    cs = "02:aa:bb:cc:dd:ee"
+    fap._last_seen[cs] = time.monotonic() - 120
+    fap._servers[cs] = object()
+    fap._credentialed.add(cs)
+    fap._last_reap = time.monotonic() - 60          # force the reap window open
+    fap._reap_idle_sessions()
+    assert cs not in fap._last_seen and cs not in fap._servers and cs not in fap._credentialed
 
 
 async def test_eapol_start_also_begins_eap():
