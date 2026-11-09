@@ -191,8 +191,9 @@ class EnterpriseEvilTwinCampaign(Campaign):
         else:
             self.log(f"[black bold on green] ✓ {cap.inner_method} [/black bold on green] "
                      f"[bold]{cap.username}[/bold] [dim](hashcat -m 5500)[/dim]{where}")
-            self.log(f"  [yellow]{cap.hashline}[/yellow]")
-            self._append_debug(f"{cap.inner_method} {cap.hashline}")
+            for line in cap.all_hashlines:
+                self.log(f"  [yellow]{line}[/yellow]")
+                self._append_debug(f"{cap.inner_method} {line}")
 
     def _append_debug(self, line: str) -> None:
         from wifit3.persist.config import Config

