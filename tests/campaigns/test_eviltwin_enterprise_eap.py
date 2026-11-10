@@ -1,0 +1,174 @@
+"""End-to-end EAP server test: a simulated non-validating PEAP supplicant (built from the same
+primitives, using Python's ssl as the client side of the tunnel over memory BIOs) drives the rogue
+EapServer through a full PEAP handshake and inner MSCHAPv2 / GTC exchange, and we assert the
+credential captured matches what the client sent. No hardware, no sockets.
+"""
+import struct
+
+
+from wifit3.campaigns.eviltwin_enterprise.eap_server import EapServer, Method
+from wifit3.campaigns.eviltwin_enterprise.tls import TlsTunnel, client_context
+from wifit3.crack.netntlm_format import mschapv2_hashline, mschapv2_hashlines
+from wifit3.dot11.eap import EAP_FAILURE, EAP_REQUEST, EAP_RESPONSE, EAP_SUCCESS
+from wifit3.dot11.eap_build import (
+    EAP_TYPE_GTC, EAP_TYPE_IDENTITY, EAP_TYPE_MSCHAPV2, EAP_TYPE_PEAP,
+    eap_frame, eap_packet, eap_tls_body, parse_eap, parse_eap_tls_body,
+)
+
+
+class _PeapClient:
+    """A misconfigured PEAP supplicant: accepts any certificate and answers the inner challenge with
+    a fixed PeerChallenge + NT-Response (the values a real client would compute from its password)."""
+
+    def __init__(self, inner_username="corp\\alice", gtc_password="s3cr3t", headerless=False,
+                 mschap_name=None):
+        self.inner_username = inner_username
+        self.mschap_name = mschap_name if mschap_name is not None else inner_username
+        self.gtc_password = gtc_password
+        self.headerless = headerless                   # PEAPv0: inner EAP is <type><data>, no header
+        self.peer_challenge = bytes(range(16))
+        self.nt_response = bytes(range(100, 124))
+        self.auth_challenge = b""
+        self.tunnel = TlsTunnel(client_context(), server_side=False, server_hostname="radius.local")
+        self._in = bytearray()
+        self._sent_inner_identity = False
+        self.done = False
+
+    def respond(self, pkt: bytes):
+        """Return the client's EAP reply to one server EAP packet, or None once the run ends."""
+        msg = parse_eap(pkt)
+        assert msg is not None, pkt.hex()
+        if msg.code in (EAP_SUCCESS, EAP_FAILURE):
+            self.done = True
+            return None
+        if msg.method_type == EAP_TYPE_IDENTITY:
+            return eap_packet(EAP_RESPONSE, msg.identifier, EAP_TYPE_IDENTITY, b"anonymous")
+        body = parse_eap_tls_body(msg.data)
+        assert body is not None
+        if body.start:
+            return self._tls_reply(msg.identifier, self.tunnel.pump_handshake())
+        self._in += body.tls_data
+        if body.more:
+            return self._tls_reply(msg.identifier, b"")         # ACK, more fragments to come
+        tls_in, self._in = bytes(self._in), bytearray()
+        self.tunnel.feed(tls_in)
+        if not self.tunnel.handshake_done:
+            out = self.tunnel.pump_handshake()
+            if self.tunnel.handshake_done and not out and self.headerless and not self._sent_inner_identity:
+                self._sent_inner_identity = True                # PEAPv0: send inner identity, headerless
+                payload = bytes([EAP_TYPE_IDENTITY]) + self.inner_username.encode()
+                return self._tls_reply(msg.identifier, self.tunnel.write_app(payload))
+            return self._tls_reply(msg.identifier, out)         # our flight, or empty ACK when done
+        return self._phase2(msg.identifier)
+
+    def _phase2(self, outer_id: int):
+        plaintext = self.tunnel.read_app()
+        if self.headerless:
+            req_type, req_id, req_data = plaintext[0], 0, plaintext[1:]
+        else:
+            inner = parse_eap(plaintext)
+            assert inner is not None and inner.code == EAP_REQUEST, plaintext.hex()
+            req_type, req_id, req_data = inner.method_type, inner.identifier, inner.data
+        if req_type == EAP_TYPE_IDENTITY:
+            resp = self.inner_username.encode()
+        elif req_type == EAP_TYPE_MSCHAPV2:
+            self.auth_challenge = req_data[5:21]
+            name = self.mschap_name.encode()
+            value = self.peer_challenge + b"\x00" * 8 + self.nt_response + b"\x00"
+            resp = struct.pack(">BBH", 2, req_data[1], 4 + 1 + 49 + len(name)) + bytes([49]) + value + name
+        elif req_type == EAP_TYPE_GTC:
+            resp = self.gtc_password.encode()
+        else:
+            raise AssertionError(f"unexpected inner type {req_type}")
+        reply = (bytes([req_type]) + resp if self.headerless
+                 else eap_packet(EAP_RESPONSE, req_id, req_type, resp))
+        return self._tls_reply(outer_id, self.tunnel.write_app(reply))
+
+    def _tls_reply(self, outer_id: int, out: bytes) -> bytes:
+        total = len(out) if out else None
+        return eap_frame(EAP_RESPONSE, outer_id, eap_tls_body(EAP_TYPE_PEAP, out, total_length=total))
+
+
+def _run(server: EapServer, client: _PeapClient) -> None:
+    pkt = server.start()[0]
+    for _ in range(200):
+        reply = client.respond(pkt)
+        if reply is None:
+            return
+        out = server.receive(parse_eap(reply))
+        if not out:
+            return
+        pkt = out[0]
+    raise AssertionError("EAP exchange did not terminate")
+
+
+def test_peap_mschapv2_capture_matches_client():
+    events: list[str] = []
+    server = EapServer("CorpNet", method=Method.PEAP, on_event=events.append)
+    client = _PeapClient(inner_username="corp\\alice")
+    _run(server, client)
+
+    cap = server.captured
+    assert cap is not None and cap.inner_method == "MSCHAPv2"
+    joined = " | ".join(events)
+    assert "TLS tunnel established" in joined         # progress milestones are emitted for the demo
+    assert "offering inner MSCHAPv2" in joined
+    assert cap.username == "corp\\alice"
+    expected = mschapv2_hashline("corp\\alice", client.auth_challenge,
+                                 client.peer_challenge, client.nt_response)
+    assert cap.hashline == expected
+    assert server.done
+
+
+def test_mschapv2_hash_uses_response_name_not_inner_identity():
+    # The client answers the inner EAP-Identity anonymously but signs its MSCHAPv2 response as
+    # corp\alice. The ChallengeHash binds the name the client hashed, so the capture must key off the
+    # response name; keying off the anonymous inner identity would write an uncrackable hash.
+    server = EapServer("CorpNet", method=Method.PEAP)
+    client = _PeapClient(inner_username="anonymous", mschap_name="corp\\alice")
+    _run(server, client)
+
+    cap = server.captured
+    assert cap is not None and cap.inner_method == "MSCHAPv2"
+    assert cap.username == "corp\\alice"
+    expected = mschapv2_hashlines("corp\\alice", client.auth_challenge,
+                                  client.peer_challenge, client.nt_response)
+    assert cap.all_hashlines == tuple(expected)
+    # a domain-qualified name yields both the qualified line and a stripped "alice" line
+    assert len(expected) == 2
+    assert cap.hashline == expected[0]
+    assert "corp\\alice::::" in expected[0] and "alice::::" in expected[1]
+
+
+def test_peapv0_headerless_inner_is_captured():
+    # macOS / iOS PEAPv0: the inner EAP packets drop the Code/Id/Length header and the client sends
+    # its inner identity first, unprompted. The server must parse <type><data> and still capture.
+    server = EapServer("CorpNet", method=Method.PEAP)
+    client = _PeapClient(inner_username="htdfggh", headerless=True)
+    _run(server, client)
+
+    cap = server.captured
+    assert cap is not None and cap.inner_method == "MSCHAPv2" and cap.username == "htdfggh"
+    expected = mschapv2_hashline("htdfggh", client.auth_challenge,
+                                 client.peer_challenge, client.nt_response)
+    assert cap.hashline == expected
+
+
+def test_peap_gtc_downgrade_captures_plaintext():
+    server = EapServer("CorpNet", method=Method.PEAP, gtc_downgrade=True)
+    client = _PeapClient(inner_username="bob", gtc_password="hunter2")
+    _run(server, client)
+
+    cap = server.captured
+    assert cap is not None and cap.inner_method == "GTC"
+    assert cap.username == "bob" and cap.password == "hunter2"
+    assert server.plaintext_credential == "bob:hunter2"
+
+
+def test_identity_is_captured_before_tunnel():
+    server = EapServer("CorpNet")
+    first = server.start()
+    assert parse_eap(first[0]).method_type == EAP_TYPE_IDENTITY
+    server.receive(parse_eap(eap_packet(EAP_RESPONSE, 1, EAP_TYPE_IDENTITY, b"outer@corp")))
+    assert server.captured is not None
+    assert server.captured.username == "outer@corp"

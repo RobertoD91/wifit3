@@ -6,6 +6,9 @@ from typing import Optional
 from wifit3.campaigns.campaign import Campaign
 from wifit3.campaigns.wep import WepCampaign
 from wifit3.campaigns.eviltwin import EvilTwinCampaign, EvilTwinInput
+from wifit3.campaigns.eviltwin_enterprise.campaign import (
+    EnterpriseEvilTwinCampaign, EnterpriseEvilTwinInput,
+)
 from wifit3.campaigns.decloak import DecloakCampaign, DecloakInput
 from wifit3.campaigns.verify.campaign import VerifyCampaign
 
@@ -21,6 +24,7 @@ class CampaignControls:
 
     def start(self, campaign: type[Campaign], array, ap, *,
               log=None, evil_input: Optional[EvilTwinInput] = None,
+              enterprise_input: Optional[EnterpriseEvilTwinInput] = None,
               decloak_input: Optional[DecloakInput] = None,
               verify_value: Optional[str] = None) -> Optional[Campaign]:
         """Construct and run one campaign, None if another campaign is active.
@@ -35,6 +39,8 @@ class CampaignControls:
             inst = campaign(array, ap, log_callback=log)
         elif campaign is EvilTwinCampaign:
             inst = campaign(array, ap, evil_input)
+        elif campaign is EnterpriseEvilTwinCampaign:
+            inst = campaign(array, ap, enterprise_input)
         elif campaign is DecloakCampaign:
             inst = campaign(array, ap, decloak_input, log=log)
         elif issubclass(campaign, VerifyCampaign):

